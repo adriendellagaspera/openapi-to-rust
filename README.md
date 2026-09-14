@@ -302,6 +302,15 @@ fixed-length body crosses the limit, the call returns
 exceed it. Successful SSE responses remain streaming; only SSE error responses
 are buffered under the same cap.
 
+Generated HTTP clients compile for `wasm32-unknown-unknown` as well as native
+targets, including the opt-in SSE runtime (`enable_sse_client` with
+`[[streaming.endpoints]]`) and the opt-in retry middleware
+(`[http_client.retry]`). On wasm32 the generated SSE stream is single-threaded
+(no `Send` bound) because the browser `fetch` body is not `Send`; native
+streams keep `Send`. The emitted dependency fragment scopes the wasm-only
+`futures-timer/wasm-bindgen` and `getrandom/wasm_js` features to
+`cfg(target_arch = "wasm32")`, so the native dependency set is unchanged.
+
 ## What the generated types look like
 
 A tour of patterns the generator emits, from real outputs.

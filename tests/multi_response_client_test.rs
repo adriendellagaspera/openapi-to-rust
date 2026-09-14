@@ -22,7 +22,8 @@ edition = "2021"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-reqwest = { version = "0.13", features = ["json", "multipart"] }
+futures-util = "0.3"
+reqwest = { version = "0.13", features = ["json", "multipart", "stream"] }
 reqwest-middleware = { version = "0.5", features = ["multipart", "query"] }
 thiserror = "2.0"
 tokio = { version = "1.0", features = ["full"] }

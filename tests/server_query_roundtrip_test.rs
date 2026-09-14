@@ -316,12 +316,13 @@ axum = "0.8"
 jsonschema = { version = "0.49", default-features = false }
 mime = "0.3"
 http-body-util = "0.1"
-reqwest = { version = "0.13", features = ["json", "multipart"] }
+reqwest = { version = "0.13", features = ["json", "multipart", "stream"] }
 reqwest-middleware = { version = "0.5", features = ["multipart", "query"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_urlencoded = "0.7"
 thiserror = "2"
+futures-util = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
 url = "2"
 "#,

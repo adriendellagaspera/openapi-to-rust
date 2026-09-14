@@ -131,8 +131,9 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 http-body-util = "0.1"
 jsonschema = { version = "0.49", default-features = false }
 mime = "0.3"
-reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
 reqwest-middleware = { version = "0.5", features = ["query"] }
+futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_urlencoded = "0.7"
