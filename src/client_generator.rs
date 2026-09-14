@@ -260,12 +260,22 @@ impl CodeGenerator {
                 max_response_body_bytes: usize,
             }
 
+            // Buffer a response body while enforcing `limit`, using
+            // `bytes_stream()` rather than `Response::chunk()`: `chunk()` is
+            // native-only in reqwest and does not exist on the wasm32 backend,
+            // so it broke every generated client under `trunk serve`
+            // (openapi-generator-xhz, issue #74). `bytes_stream()` is available
+            // on both targets behind reqwest's `stream` feature.
             async fn __read_bounded_response_body(
-                mut response: reqwest::Response,
+                response: reqwest::Response,
                 limit: usize,
             ) -> Result<Vec<u8>, HttpError> {
+                use futures_util::StreamExt;
+
                 let mut body = Vec::new();
-                while let Some(chunk) = response.chunk().await.map_err(HttpError::Network)? {
+                let mut stream = std::pin::pin!(response.bytes_stream());
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk.map_err(HttpError::Network)?;
                     let next_len = body.len().checked_add(chunk.len());
                     if next_len.is_none_or(|next_len| next_len > limit) {
                         return Err(HttpError::ResponseTooLarge { limit });

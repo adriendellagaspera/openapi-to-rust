@@ -20,6 +20,11 @@ jobs:
         with:
           submodules: true
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          # `generated_wasm_client_test` compiles a generated client for
+          # wasm32-unknown-unknown; without the target it skips, which would
+          # let issue #74 regress silently.
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --profile ci --all-features

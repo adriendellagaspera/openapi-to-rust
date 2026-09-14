@@ -9,6 +9,7 @@
 /tmp/gen-openai/
 /tmp/gen-cloudflare/
 /tmp/gen-groq/
+/tmp/issue74/
 *.swp
 *.swo
 *~

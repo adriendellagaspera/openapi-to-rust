@@ -302,6 +302,11 @@ fixed-length body crosses the limit, the call returns
 exceed it. Successful SSE responses remain streaming; only SSE error responses
 are buffered under the same cap.
 
+Generated HTTP clients compile for `wasm32-unknown-unknown` as well as native
+targets. The opt-in SSE runtime (`enable_sse_client` with
+`[[streaming.endpoints]]`) and the opt-in retry middleware
+(`[http_client.retry]`) are not wasm32-compatible.
+
 ## What the generated types look like
 
 A tour of patterns the generator emits, from real outputs.

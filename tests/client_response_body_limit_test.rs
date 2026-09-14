@@ -131,6 +131,11 @@ fn generated_clients_bound_chunked_responses_without_content_length() {
     assert!(client.content.contains("with_max_response_body_bytes"));
     assert!(client.content.contains("checked_add(chunk.len())"));
     assert!(!client.content.contains("response.bytes().await"));
+    // The bounded reader must go through `bytes_stream()`, not
+    // `Response::chunk()`: the latter is native-only in reqwest and breaks
+    // every generated client under wasm32 (issue #74).
+    assert!(client.content.contains("bytes_stream()"));
+    assert!(!client.content.contains(".chunk()"));
 
     let streaming = result
         .files

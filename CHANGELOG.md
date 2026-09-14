@@ -6,6 +6,26 @@ when correcting output that was wrong or incomplete on the wire.
 
 ## [Unreleased]
 
+### Fixed
+
+#### Generated Rust API
+
+- Generated HTTP clients now compile for `wasm32-unknown-unknown`. The bounded
+  response reader used `reqwest::Response::chunk()`, which exists only on
+  reqwest's native backend; under `trunk serve`/WASM every generated client
+  failed with `no method named chunk found for struct Response`. The reader now
+  buffers through `bytes_stream()`, which is available on both targets behind
+  reqwest's `stream` feature, and the emitted `REQUIRED_DEPS.toml` gains
+  `futures-util`. The generated code and dependency fragment change for every
+  spec that emits a client; regenerate and re-merge the fragment. See issue #74.
+
+### Added
+
+- `generated_wasm_client_test` compiles a generated client for
+  `wasm32-unknown-unknown` on CI, which is the only automated check that
+  catches the regression above. The `test` job installs the wasm32 target so
+  the test cannot silently skip.
+
 ## [0.16.0] - 2026-09-08
 
 ### Breaking changes
