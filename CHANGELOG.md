@@ -6,6 +6,26 @@ when correcting output that was wrong or incomplete on the wire.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-14
+
+### Breaking changes
+
+#### Library API
+
+- `type_mapping::DepRequirement` gained the public field `target`, which scopes a
+  requirement to a Cargo target cfg. Downstream public-struct literals must
+  include it; use `DepRequirement::for_target` to set it. `GenerationResult`'s
+  `required_deps` can now contain target-scoped entries.
+
+#### Generated Rust API
+
+- Every generated client's `REQUIRED_DEPS.toml` gains `futures-util`, and
+  clients configured with SSE and/or retry also gain a
+  `[target.'cfg(target_arch = "wasm32")'.dependencies]` table. Regenerate and
+  re-merge the fragment. The SSE runtime additionally re-exports the
+  `BoxSseStream<T>` alias, and its stream type is `Send` on native targets but
+  not on wasm32.
+
 ### Fixed
 
 #### Generated Rust API
@@ -25,12 +45,16 @@ when correcting output that was wrong or incomplete on the wire.
   - retry pulls `retry-policies`→`rand`→`getrandom 0.4`, which rejects wasm32
     without `wasm_js`.
 
-  The emitted `REQUIRED_DEPS.toml` gains `futures-util` and a
-  `[target.'cfg(target_arch = "wasm32")'.dependencies]` table carrying
-  `futures-timer/wasm-bindgen` (SSE timers) and `getrandom/wasm_js` (retry).
-  The native dependency set is unchanged. The generated code and dependency
-  fragment change for every spec that emits a client; regenerate and re-merge
-  the fragment. See issue #74.
+  The native dependency set is unchanged; the extra wasm-only features are
+  target-scoped. See issue #74.
+
+#### Tooling
+
+- `scripts/gen-diff.sh` builds the base generator into its own target dir. The
+  base and head generators share one package identity, so a restored build cache
+  could make the head crate look fresh after the base build overwrote the shared
+  artifact; `gen-diff` then reported "no change" while the manifest gate saw
+  stale output.
 
 ### Added
 
@@ -688,7 +712,8 @@ would have passed any amount of spec-diffing.
   signed enum values, recursive unions, parameter collisions, optional request
   bodies, range response codes, and path-segment encoding.
 
-[Unreleased]: https://github.com/gpu-cli/openapi-to-rust/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/gpu-cli/openapi-to-rust/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/gpu-cli/openapi-to-rust/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/gpu-cli/openapi-to-rust/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/gpu-cli/openapi-to-rust/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/gpu-cli/openapi-to-rust/compare/v0.13.0...v0.14.0
