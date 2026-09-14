@@ -32,6 +32,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::openapi::{SchemaDetails, SchemaType as OpenApiSchemaType};
 
+/// Cargo target-cfg predicate for wasm32-unknown-unknown. Emitted target-scoped
+/// dependencies use this so only web wasm builds pick up the extra features.
+pub const WASM_TARGET_CFG: &str = "cfg(target_arch = \"wasm32\")";
+
 /// Result of mapping an OpenAPI `(type, format)` pair to a Rust type.
 #[derive(Debug, Clone)]
 pub struct MappedType {
@@ -149,6 +153,11 @@ pub struct DepRequirement {
     pub features: Vec<&'static str>,
     pub default_features: bool,
     pub optional: bool,
+    /// When set, this requirement is emitted under a
+    /// `[target.'<cfg>'.dependencies]` table instead of `[dependencies]`.
+    /// Used for wasm-only needs (e.g. `getrandom/wasm_js`) that must not
+    /// change the native dependency set.
+    pub target: Option<&'static str>,
 }
 
 impl DepRequirement {
@@ -159,6 +168,7 @@ impl DepRequirement {
             features: Vec::new(),
             default_features: true,
             optional: false,
+            target: None,
         }
     }
 
@@ -176,6 +186,13 @@ impl DepRequirement {
 
     pub fn optional(mut self) -> Self {
         self.optional = true;
+        self
+    }
+
+    /// Scope this requirement to the given target cfg predicate, e.g.
+    /// `cfg(target_arch = "wasm32")`.
+    pub fn for_target(mut self, cfg: &'static str) -> Self {
+        self.target = Some(cfg);
         self
     }
 
@@ -223,9 +240,23 @@ pub fn render_required_deps_toml(deps: &[DepRequirement]) -> Option<String> {
          \n\
          [dependencies]\n",
     );
-    for dep in deps {
+    for dep in deps.iter().filter(|dep| dep.target.is_none()) {
         out.push_str(&dep.to_toml_line());
         out.push('\n');
+    }
+    // Target-scoped requirements are grouped by cfg. `merge_dep_requirements`
+    // already sorts by crate name, and there is currently a single target, so
+    // grouping directly yields a stable order.
+    for target in deps
+        .iter()
+        .filter_map(|dep| dep.target)
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        out.push_str(&format!("\n[target.'{target}'.dependencies]\n"));
+        for dep in deps.iter().filter(|dep| dep.target == Some(target)) {
+            out.push_str(&dep.to_toml_line());
+            out.push('\n');
+        }
     }
     if deps.iter().any(|dep| dep.crate_name == "specta") {
         out.push_str("\n[features]\nspecta = [\"dep:specta\"]\n");
@@ -239,12 +270,16 @@ pub fn render_required_deps_toml(deps: &[DepRequirement]) -> Option<String> {
 pub fn merge_dep_requirements(
     requirements: impl IntoIterator<Item = DepRequirement>,
 ) -> Vec<DepRequirement> {
-    let mut merged: std::collections::BTreeMap<&'static str, DepRequirement> =
-        std::collections::BTreeMap::new();
+    // Target-scoped requirements are keyed separately from global ones: a
+    // global `getrandom` and a wasm-only `getrandom` are distinct entries.
+    let mut merged: std::collections::BTreeMap<
+        (&'static str, Option<&'static str>),
+        DepRequirement,
+    > = std::collections::BTreeMap::new();
     for mut dependency in requirements {
         dependency.features.sort_unstable();
         dependency.features.dedup();
-        match merged.get_mut(dependency.crate_name) {
+        match merged.get_mut(&(dependency.crate_name, dependency.target)) {
             Some(existing) => {
                 debug_assert_eq!(existing.version, dependency.version);
                 existing.default_features |= dependency.default_features;
@@ -254,7 +289,7 @@ pub fn merge_dep_requirements(
                 existing.features.dedup();
             }
             None => {
-                merged.insert(dependency.crate_name, dependency);
+                merged.insert((dependency.crate_name, dependency.target), dependency);
             }
         }
     }
@@ -373,6 +408,15 @@ pub fn collect_generated_dep_requirements<'a>(
         } else {
             dependency.without_default_features()
         });
+        // `reqwest-retry` -> `retry-policies` -> `rand` -> `getrandom 0.4`,
+        // which refuses wasm32 without the web-Crypto backend. Scope the
+        // enabling dependency to wasm32 so the native dependency set (and
+        // non-web wasm builds) are untouched.
+        dependencies.push(
+            DepRequirement::new("getrandom", "0.4")
+                .with_features(&["wasm_js"])
+                .for_target(WASM_TARGET_CFG),
+        );
     }
     if uses("reqwest_tracing::") {
         dependencies.push(DepRequirement::new("reqwest-tracing", "0.7"));
@@ -388,6 +432,14 @@ pub fn collect_generated_dep_requirements<'a>(
     }
     if uses("futures_timer::") {
         dependencies.push(DepRequirement::new("futures-timer", "3"));
+        // On wasm32 `futures-timer`'s `Delay` needs the `wasm-bindgen` backend,
+        // which is not in its default feature set. Scope it to wasm32 so the
+        // native build is unchanged.
+        dependencies.push(
+            DepRequirement::new("futures-timer", "3")
+                .with_features(&["wasm-bindgen"])
+                .for_target(WASM_TARGET_CFG),
+        );
     }
     if uses("futures_core::") {
         dependencies.push(DepRequirement::new("futures-core", "0.3"));

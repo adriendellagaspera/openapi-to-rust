@@ -374,6 +374,8 @@ edition = "2024"
 publish = false
 
 {dependencies}
+
+[dev-dependencies]
 tokio = {{ version = "1", features = ["io-util", "macros", "net", "rt-multi-thread"] }}
 "#
         ),

@@ -83,7 +83,7 @@ fn generated_sse_transport_streams_openai_and_anthropic_protocols() {
 
     assert!(output_dir.join("sse.rs").is_file());
     let streaming = std::fs::read_to_string(output_dir.join("streaming.rs")).unwrap();
-    assert!(streaming.contains("use super::sse::SseClient"));
+    assert!(streaming.contains("use super::sse::{BoxSseStream, SseClient}"));
 
     std::fs::write(
         temp.path().join("src/main.rs"),
@@ -166,6 +166,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .unwrap();
 
     let dependencies = std::fs::read_to_string(output_dir.join("REQUIRED_DEPS.toml")).unwrap();
+    // The emitted fragment may end with a target-scoped table, so append the
+    // test-only runtime dependency to `[dependencies]` explicitly rather than
+    // after the fragment.
+    let dependencies = dependencies.replacen(
+        "[dependencies]\n",
+        "[dependencies]\ntokio = { version = \"1\", features = [\"macros\", \"rt-multi-thread\"] }\n",
+        1,
+    );
     std::fs::write(
         temp.path().join("Cargo.toml"),
         format!(
@@ -176,7 +184,6 @@ edition = "2024"
 publish = false
 
 {dependencies}
-tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
 "#
         ),
     )

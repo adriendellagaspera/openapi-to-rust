@@ -10,20 +10,34 @@ when correcting output that was wrong or incomplete on the wire.
 
 #### Generated Rust API
 
-- Generated HTTP clients now compile for `wasm32-unknown-unknown`. The bounded
-  response reader used `reqwest::Response::chunk()`, which exists only on
-  reqwest's native backend; under `trunk serve`/WASM every generated client
-  failed with `no method named chunk found for struct Response`. The reader now
-  buffers through `bytes_stream()`, which is available on both targets behind
-  reqwest's `stream` feature, and the emitted `REQUIRED_DEPS.toml` gains
-  `futures-util`. The generated code and dependency fragment change for every
-  spec that emits a client; regenerate and re-merge the fragment. See issue #74.
+- Generated HTTP clients now compile for `wasm32-unknown-unknown`, including
+  the opt-in SSE runtime and retry middleware. Previously:
+  - the bounded response reader used `reqwest::Response::chunk()`, which exists
+    only on reqwest's native backend; under `trunk serve`/WASM every generated
+    client failed with `no method named chunk found for struct Response`. The
+    reader now buffers through `bytes_stream()`, available on both targets
+    behind reqwest's `stream` feature.
+  - the SSE runtime's `Pin<Box<dyn Stream + Send>>` signatures and
+    `#[async_trait]` (which implies `Send` futures) cannot be satisfied by the
+    browser `fetch` body. It now emits a cfg-split `BoxSseStream<T>` alias and
+    `#[cfg_attr(..., async_trait(?Send))]`: native streams stay `Send`, wasm
+    streams are single-threaded.
+  - retry pulls `retry-policies`→`rand`→`getrandom 0.4`, which rejects wasm32
+    without `wasm_js`.
+
+  The emitted `REQUIRED_DEPS.toml` gains `futures-util` and a
+  `[target.'cfg(target_arch = "wasm32")'.dependencies]` table carrying
+  `futures-timer/wasm-bindgen` (SSE timers) and `getrandom/wasm_js` (retry).
+  The native dependency set is unchanged. The generated code and dependency
+  fragment change for every spec that emits a client; regenerate and re-merge
+  the fragment. See issue #74.
 
 ### Added
 
 - `generated_wasm_client_test` compiles a generated client for
-  `wasm32-unknown-unknown` on CI, which is the only automated check that
-  catches the regression above. The `test` job installs the wasm32 target so
+  `wasm32-unknown-unknown` on CI, covering default, retry, SSE, and SSE+retry
+  configurations on both wasm32 and native. It is the only automated check that
+  catches the regressions above. The `test` job installs the wasm32 target so
   the test cannot silently skip.
 
 ## [0.16.0] - 2026-09-08

@@ -1114,12 +1114,12 @@ impl CodeGenerator {
         if streaming_config.generate_client {
             if streaming_config.reconnection_config.is_some() {
                 client_code.extend(quote! {
-                    use super::sse::{SseClient, SseReconnectOptions};
+                    use super::sse::{BoxSseStream, SseClient, SseReconnectOptions};
                     pub use super::sse::StreamingError;
                 });
             } else {
                 client_code.extend(quote! {
-                    use super::sse::SseClient;
+                    use super::sse::{BoxSseStream, SseClient};
                     pub use super::sse::StreamingError;
                 });
             }
@@ -5064,7 +5064,7 @@ impl CodeGenerator {
                     async fn #method_name(
                         &self,
                         #(#param_defs),*
-                    ) -> Result<Pin<Box<dyn Stream<Item = Result<#event_type, Self::Error>> + Send>>, Self::Error>;
+                    ) -> Result<BoxSseStream<Result<#event_type, Self::Error>>, Self::Error>;
                 }
             }
             HttpMethod::Post => {
@@ -5084,14 +5084,15 @@ impl CodeGenerator {
                     async fn #method_name(
                         &self,
                         request: #request_type_ident,
-                    ) -> Result<Pin<Box<dyn Stream<Item = Result<#event_type, Self::Error>> + Send>>, Self::Error>;
+                    ) -> Result<BoxSseStream<Result<#event_type, Self::Error>>, Self::Error>;
                 }
             }
         };
 
         Ok(quote! {
             /// Streaming client trait for this endpoint
-            #[async_trait]
+            #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+            #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
             pub trait #trait_name {
                 type Error: std::error::Error + Send + Sync + 'static;
 
@@ -5423,7 +5424,8 @@ impl CodeGenerator {
         let instrument_skip = quote! { #[instrument(skip(self), name = "streaming_get_request")] };
 
         Ok(quote! {
-            #[async_trait]
+            #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+            #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
             impl #trait_name for #client_name {
                 type Error = StreamingError;
 
@@ -5431,7 +5433,7 @@ impl CodeGenerator {
                 async fn #method_name(
                     &self,
                     #(#param_defs),*
-                ) -> Result<Pin<Box<dyn Stream<Item = Result<#event_type, Self::Error>> + Send>>, Self::Error> {
+                ) -> Result<BoxSseStream<Result<#event_type, Self::Error>>, Self::Error> {
                     debug!("Starting streaming GET request");
 
                     let mut headers = HeaderMap::new();
@@ -5514,7 +5516,8 @@ impl CodeGenerator {
         };
 
         Ok(quote! {
-            #[async_trait]
+            #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+            #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
             impl #trait_name for #client_name {
                 type Error = StreamingError;
 
@@ -5522,7 +5525,7 @@ impl CodeGenerator {
                 async fn #method_name(
                     &self,
                     request: #request_type_ident,
-                ) -> Result<Pin<Box<dyn Stream<Item = Result<#event_type, Self::Error>> + Send>>, Self::Error> {
+                ) -> Result<BoxSseStream<Result<#event_type, Self::Error>>, Self::Error> {
                     debug!("Starting streaming POST request");
 
                     #stream_setup
@@ -5566,6 +5569,19 @@ impl CodeGenerator {
             use std::pin::Pin;
             use std::time::Duration;
             use tracing::debug;
+
+            /// Boxed stream of SSE events.
+            ///
+            /// `Send` on native targets so callers can move the stream between
+            /// tasks. On `wasm32` the reqwest response wraps a JS `fetch` body
+            /// (holding `Rc<RefCell<..>>` and a wasm-bindgen closure) and cannot
+            /// be `Send`, so the bound is omitted and the stream stays on the
+            /// single wasm thread. The public signatures do not change on
+            /// native targets.
+            #[cfg(not(target_arch = "wasm32"))]
+            pub type BoxSseStream<T> = Pin<Box<dyn Stream<Item = T> + Send>>;
+            #[cfg(target_arch = "wasm32")]
+            pub type BoxSseStream<T> = Pin<Box<dyn Stream<Item = T>>>;
 
             #error_types
 
@@ -5613,7 +5629,7 @@ impl CodeGenerator {
                 pub async fn stream<T>(
                     &self,
                     request_builder: reqwest::RequestBuilder,
-                ) -> Result<Pin<Box<dyn Stream<Item = Result<T, StreamingError>> + Send>>, StreamingError>
+                ) -> Result<BoxSseStream<Result<T, StreamingError>>, StreamingError>
                 where
                     T: serde::de::DeserializeOwned + Send + 'static,
                 {
@@ -5635,7 +5651,7 @@ impl CodeGenerator {
                 pub async fn stream_raw(
                     &self,
                     request_builder: reqwest::RequestBuilder,
-                ) -> Result<Pin<Box<dyn Stream<Item = Result<SseEvent<String>, StreamingError>> + Send>>, StreamingError> {
+                ) -> Result<BoxSseStream<Result<SseEvent<String>, StreamingError>>, StreamingError> {
                     parse_sse_raw_stream_with_limit(request_builder, self.max_error_body_bytes).await
                 }
 
@@ -5643,7 +5659,7 @@ impl CodeGenerator {
                 pub async fn stream_json<T>(
                     &self,
                     request_builder: reqwest::RequestBuilder,
-                ) -> Result<Pin<Box<dyn Stream<Item = Result<SseEvent<T>, StreamingError>> + Send>>, StreamingError>
+                ) -> Result<BoxSseStream<Result<SseEvent<T>, StreamingError>>, StreamingError>
                 where
                     T: serde::de::DeserializeOwned + Send + 'static,
                 {
@@ -5654,7 +5670,7 @@ impl CodeGenerator {
                 pub async fn stream_raw_reconnecting(
                     &self,
                     request_builder: reqwest::RequestBuilder,
-                ) -> Result<Pin<Box<dyn Stream<Item = Result<SseEvent<String>, StreamingError>> + Send>>, StreamingError> {
+                ) -> Result<BoxSseStream<Result<SseEvent<String>, StreamingError>>, StreamingError> {
                     parse_sse_raw_reconnecting_with_limit(
                         request_builder,
                         self.max_error_body_bytes,
@@ -5666,7 +5682,7 @@ impl CodeGenerator {
                 pub async fn stream_json_reconnecting<T>(
                     &self,
                     request_builder: reqwest::RequestBuilder,
-                ) -> Result<Pin<Box<dyn Stream<Item = Result<SseEvent<T>, StreamingError>> + Send>>, StreamingError>
+                ) -> Result<BoxSseStream<Result<SseEvent<T>, StreamingError>>, StreamingError>
                 where
                     T: serde::de::DeserializeOwned + Send + 'static,
                 {
@@ -5699,11 +5715,15 @@ impl CodeGenerator {
             pub const DEFAULT_MAX_SSE_ERROR_BODY_BYTES: usize = 8 * 1024 * 1024;
 
             async fn __read_bounded_streaming_error_body(
-                mut response: reqwest::Response,
+                response: reqwest::Response,
                 limit: usize,
             ) -> Result<Vec<u8>, StreamingError> {
                 let mut body = Vec::new();
-                while let Some(chunk) = response.chunk().await? {
+                // `bytes_stream()` rather than `Response::chunk()`: `chunk()` is
+                // native-only in reqwest and does not exist on wasm32.
+                let mut chunks = response.bytes_stream();
+                while let Some(chunk) = chunks.next().await {
+                    let chunk = chunk?;
                     let next_len = body.len().checked_add(chunk.len());
                     if next_len.is_none_or(|next_len| next_len > limit) {
                         return Err(StreamingError::ResponseTooLarge { limit });
@@ -5942,7 +5962,7 @@ impl CodeGenerator {
             /// Parse an SSE response without an external EventSource wrapper.
             pub async fn parse_sse_stream<T>(
                 request_builder: reqwest::RequestBuilder
-            ) -> Result<Pin<Box<dyn Stream<Item = Result<T, StreamingError>> + Send>>, StreamingError>
+            ) -> Result<BoxSseStream<Result<T, StreamingError>>, StreamingError>
             where
                 T: serde::de::DeserializeOwned + Send + 'static,
             {
@@ -6005,26 +6025,26 @@ impl CodeGenerator {
 
             fn __raw_response_stream(
                 response: reqwest::Response,
-            ) -> Pin<Box<dyn Stream<Item = Result<SseEvent<String>, StreamingError>> + Send>> {
+            ) -> BoxSseStream<Result<SseEvent<String>, StreamingError>> {
                 let stream = futures_util::stream::unfold(
                     (
-                        response,
+                        response.bytes_stream(),
                         __SseDecoder::default(),
                         std::collections::VecDeque::<Result<SseEvent<String>, StreamingError>>::new(),
                         false,
                     ),
-                    |(mut response, mut decoder, mut pending, mut done)| async move {
+                    |(mut chunks, mut decoder, mut pending, mut done)| async move {
                         loop {
                             if let Some(item) = pending.pop_front() {
-                                return Some((item, (response, decoder, pending, done)));
+                                return Some((item, (chunks, decoder, pending, done)));
                             }
                             if done {
                                 debug!("SSE stream completed normally");
                                 return None;
                             }
 
-                            match response.chunk().await {
-                                Ok(Some(chunk)) => {
+                            match chunks.next().await {
+                                Some(Ok(chunk)) => {
                                     for event in decoder.feed(&chunk) {
                                         let is_done = event
                                             .as_ref()
@@ -6036,11 +6056,11 @@ impl CodeGenerator {
                                         }
                                     }
                                 }
-                                Err(error) => {
+                                Some(Err(error)) => {
                                     done = true;
                                     pending.push_back(Err(error.into()));
                                 }
-                                Ok(None) => {
+                                None => {
                                     done = true;
                                     for event in decoder.finish() {
                                         pending.push_back(event);
@@ -6057,7 +6077,7 @@ impl CodeGenerator {
             async fn parse_sse_raw_stream_with_limit(
                 request_builder: reqwest::RequestBuilder,
                 max_response_body_bytes: usize,
-            ) -> Result<Pin<Box<dyn Stream<Item = Result<SseEvent<String>, StreamingError>> + Send>>, StreamingError> {
+            ) -> Result<BoxSseStream<Result<SseEvent<String>, StreamingError>>, StreamingError> {
                 Ok(match __open_sse_response(request_builder, max_response_body_bytes).await {
                     Ok(response) => __raw_response_stream(response),
                     Err(error) => Box::pin(futures_util::stream::once(async move { Err(error.error) })),
@@ -6065,8 +6085,8 @@ impl CodeGenerator {
             }
 
             fn __json_event_stream<T>(
-                raw: Pin<Box<dyn Stream<Item = Result<SseEvent<String>, StreamingError>> + Send>>,
-            ) -> Pin<Box<dyn Stream<Item = Result<SseEvent<T>, StreamingError>> + Send>>
+                raw: BoxSseStream<Result<SseEvent<String>, StreamingError>>,
+            ) -> BoxSseStream<Result<SseEvent<T>, StreamingError>>
             where
                 T: serde::de::DeserializeOwned + Send + 'static,
             {
@@ -6081,7 +6101,7 @@ impl CodeGenerator {
             async fn parse_sse_json_events_with_limit<T>(
                 request_builder: reqwest::RequestBuilder,
                 max_response_body_bytes: usize,
-            ) -> Result<Pin<Box<dyn Stream<Item = Result<SseEvent<T>, StreamingError>> + Send>>, StreamingError>
+            ) -> Result<BoxSseStream<Result<SseEvent<T>, StreamingError>>, StreamingError>
             where
                 T: serde::de::DeserializeOwned + Send + 'static,
             {
@@ -6093,7 +6113,7 @@ impl CodeGenerator {
             async fn parse_sse_json_stream_with_limit<T>(
                 request_builder: reqwest::RequestBuilder,
                 max_response_body_bytes: usize,
-            ) -> Result<Pin<Box<dyn Stream<Item = Result<T, StreamingError>> + Send>>, StreamingError>
+            ) -> Result<BoxSseStream<Result<T, StreamingError>>, StreamingError>
             where
                 T: serde::de::DeserializeOwned + Send + 'static,
             {
@@ -6103,7 +6123,7 @@ impl CodeGenerator {
 
             struct __ReconnectState {
                 request: reqwest::RequestBuilder,
-                response: Option<reqwest::Response>,
+                body: Option<BoxSseStream<Result<bytes::Bytes, reqwest::Error>>>,
                 decoder: __SseDecoder,
                 pending: std::collections::VecDeque<Result<SseEvent<String>, StreamingError>>,
                 options: SseReconnectOptions,
@@ -6117,7 +6137,7 @@ impl CodeGenerator {
                 request_builder: reqwest::RequestBuilder,
                 max_response_body_bytes: usize,
                 options: SseReconnectOptions,
-            ) -> Result<Pin<Box<dyn Stream<Item = Result<SseEvent<String>, StreamingError>> + Send>>, StreamingError> {
+            ) -> Result<BoxSseStream<Result<SseEvent<String>, StreamingError>>, StreamingError> {
                 if request_builder.try_clone().is_none() {
                     return Err(StreamingError::Connection(
                         "SSE reconnection requires a cloneable request body".to_string(),
@@ -6127,7 +6147,7 @@ impl CodeGenerator {
                 let stream = futures_util::stream::unfold(
                     __ReconnectState {
                         request: request_builder,
-                        response: None,
+                        body: None,
                         decoder: __SseDecoder::default(),
                         pending: std::collections::VecDeque::new(),
                         options,
@@ -6145,7 +6165,7 @@ impl CodeGenerator {
                                 return None;
                             }
 
-                            if state.response.is_none() {
+                            if state.body.is_none() {
                                 if state.wait_before_open {
                                     let delay = state.options.delay(
                                         state.attempts.saturating_sub(1),
@@ -6161,7 +6181,7 @@ impl CodeGenerator {
                                     request = request.header("Last-Event-ID", last_event_id);
                                 }
                                 match __open_sse_response(request, state.max_response_body_bytes).await {
-                                    Ok(response) => state.response = Some(response),
+                                    Ok(response) => state.body = Some(Box::pin(response.bytes_stream())),
                                     Err(error) if error.retryable && state.attempts < state.options.max_retries => {
                                         state.attempts += 1;
                                         state.wait_before_open = true;
@@ -6175,9 +6195,9 @@ impl CodeGenerator {
                                 }
                             }
 
-                            let next = state.response.as_mut().expect("response opened").chunk().await;
+                            let next = state.body.as_mut().expect("response opened").next().await;
                             match next {
-                                Ok(Some(chunk)) => {
+                                Some(Ok(chunk)) => {
                                     let events = state.decoder.feed(&chunk);
                                     if !events.is_empty() {
                                         state.attempts = 0;
@@ -6189,12 +6209,12 @@ impl CodeGenerator {
                                         state.pending.push_back(event);
                                         if is_done {
                                             state.done = true;
-                                            state.response = None;
+                                            state.body = None;
                                             break;
                                         }
                                     }
                                 }
-                                Ok(None) => {
+                                None => {
                                     let events = state.decoder.finish();
                                     if !events.is_empty() {
                                         state.attempts = 0;
@@ -6209,7 +6229,7 @@ impl CodeGenerator {
                                             break;
                                         }
                                     }
-                                    state.response = None;
+                                    state.body = None;
                                     state.decoder.reset_for_reconnect();
                                     if !state.done {
                                         if state.attempts < state.options.max_retries {
@@ -6220,8 +6240,8 @@ impl CodeGenerator {
                                         }
                                     }
                                 }
-                                Err(error) => {
-                                    state.response = None;
+                                Some(Err(error)) => {
+                                    state.body = None;
                                     state.decoder.reset_for_reconnect();
                                     if state.attempts < state.options.max_retries {
                                         state.attempts += 1;
@@ -6242,7 +6262,7 @@ impl CodeGenerator {
                 request_builder: reqwest::RequestBuilder,
                 max_response_body_bytes: usize,
                 options: SseReconnectOptions,
-            ) -> Result<Pin<Box<dyn Stream<Item = Result<SseEvent<T>, StreamingError>> + Send>>, StreamingError>
+            ) -> Result<BoxSseStream<Result<SseEvent<T>, StreamingError>>, StreamingError>
             where
                 T: serde::de::DeserializeOwned + Send + 'static,
             {
@@ -6259,7 +6279,7 @@ impl CodeGenerator {
                 request_builder: reqwest::RequestBuilder,
                 max_response_body_bytes: usize,
                 options: SseReconnectOptions,
-            ) -> Result<Pin<Box<dyn Stream<Item = Result<T, StreamingError>> + Send>>, StreamingError>
+            ) -> Result<BoxSseStream<Result<T, StreamingError>>, StreamingError>
             where
                 T: serde::de::DeserializeOwned + Send + 'static,
             {

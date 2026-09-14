@@ -192,12 +192,17 @@ fn compile_case(name: &str, mut config: GeneratorConfig) -> openapi_to_rust::Gen
     let parsed = dependency_fragment
         .parse::<toml::Table>()
         .expect("dependency fragment is valid TOML");
+    let global_requirements = result
+        .required_deps
+        .iter()
+        .filter(|dependency| dependency.target.is_none())
+        .count();
     assert_eq!(
         parsed
             .get("dependencies")
             .and_then(toml::Value::as_table)
             .map(toml::Table::len),
-        Some(result.required_deps.len())
+        Some(global_requirements)
     );
 
     std::fs::write(&manifest_path, format!("{package}\n{dependency_fragment}"))
@@ -414,6 +419,44 @@ fn every_generation_mode_compiles_from_its_exact_dependency_fragment() {
     assert_eq!(middleware.version, "0.5");
     assert_eq!(middleware.features, vec!["multipart", "query"]);
 
+    // Retry pulls `getrandom 0.4`, which needs `wasm_js` on wasm32. The
+    // requirement must be target-scoped so native is unchanged.
+    let retry = compile_case(
+        "retry",
+        GeneratorConfig {
+            enable_async_client: true,
+            enable_sse_client: false,
+            tracing_enabled: false,
+            retry_config: Some(openapi_to_rust::RetryConfig {
+                max_retries: 2,
+                initial_delay_ms: 500,
+                max_delay_ms: 16_000,
+            }),
+            ..Default::default()
+        },
+    );
+    assert!(
+        retry
+            .required_deps
+            .iter()
+            .any(|dependency| dependency.crate_name == "reqwest-retry"),
+        "retry config must emit reqwest-retry"
+    );
+    let wasm_getrandom = retry
+        .required_deps
+        .iter()
+        .find(|dependency| dependency.crate_name == "getrandom")
+        .expect("wasm getrandom for retry");
+    assert_eq!(wasm_getrandom.target, Some("cfg(target_arch = \"wasm32\")"));
+    assert_eq!(wasm_getrandom.features, vec!["wasm_js"]);
+    assert!(
+        !retry
+            .required_deps
+            .iter()
+            .any(|dependency| dependency.crate_name == "getrandom" && dependency.target.is_none()),
+        "getrandom must not be a global dependency"
+    );
+
     let sse = compile_case(
         "sse",
         GeneratorConfig {
@@ -465,6 +508,26 @@ fn every_generation_mode_compiles_from_its_exact_dependency_fragment() {
     );
     assert!(sse_runtime.content.contains("pub async fn stream_raw"));
     assert!(sse_runtime.content.contains("Last-Event-ID"));
+    // The boxed-stream alias is cfg-split so native keeps `Send` and wasm drops
+    // it (issue #74 follow-up).
+    assert!(sse_runtime.content.contains("pub type BoxSseStream<T>"));
+    assert!(
+        sse_runtime
+            .content
+            .contains("#[cfg(not(target_arch = \"wasm32\"))]")
+    );
+    assert!(
+        sse_runtime
+            .content
+            .contains("#[cfg(target_arch = \"wasm32\")]")
+    );
+    // `futures-timer` must gain its wasm backend under a target table.
+    let wasm_futures_timer = sse
+        .required_deps
+        .iter()
+        .find(|dependency| dependency.crate_name == "futures-timer" && dependency.target.is_some())
+        .expect("target-scoped futures-timer");
+    assert_eq!(wasm_futures_timer.features, vec!["wasm-bindgen"]);
     let streaming = sse
         .files
         .iter()
@@ -473,7 +536,13 @@ fn every_generation_mode_compiles_from_its_exact_dependency_fragment() {
     assert!(
         streaming
             .content
-            .contains("use super::sse::{SseClient, SseReconnectOptions}")
+            .contains("use super::sse::{BoxSseStream, SseClient, SseReconnectOptions}")
+    );
+    // `#[async_trait]` is `?Send` on wasm and default on native.
+    assert!(
+        streaming
+            .content
+            .contains("#[cfg_attr(target_arch = \"wasm32\", async_trait(?Send))]")
     );
     assert!(streaming.content.contains("with_reconnect_options"));
     assert!(sse.mod_file.content.contains("pub mod sse;"));
@@ -551,6 +620,7 @@ fn every_generation_mode_compiles_from_its_exact_dependency_fragment() {
             "futures-core",
             "futures-timer",
             "futures-util",
+            "getrandom",
             "http-body-util",
             "jsonschema",
             "mime",
