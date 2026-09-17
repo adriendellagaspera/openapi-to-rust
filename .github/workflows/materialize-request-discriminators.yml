@@ -14,10 +14,13 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Apply focused source transformation
-        run: python .github/materializers/request_discriminators.py
+        run: |
+          python .github/materializers/request_discriminators.py
+          python .github/materializers/request_discriminators_post.py
       - name: Remove one-shot materializer
         run: |
           rm -f .github/materializers/request_discriminators.py
+          rm -f .github/materializers/request_discriminators_post.py
           rm -f .github/workflows/materialize-request-discriminators.yml
           rm -f .github/workflows/inspect-discriminator-seams.yml
       - name: Format
