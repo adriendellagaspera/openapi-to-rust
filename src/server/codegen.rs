@@ -3282,6 +3282,7 @@ impl<'a> ServerCodegen<'a> {
                                 schema_name: schema_name.clone(),
                                 media_type: "application/json".to_string(),
                             }),
+                            representations: Vec::new(),
                             supports_streaming: false,
                             has_content: true,
                             unsupported_media_types: Vec::new(),
