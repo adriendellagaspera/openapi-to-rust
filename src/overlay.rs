@@ -182,7 +182,6 @@ fn apply_action(
         }
         None => false,
     };
-    let has_update = action.contains_key("update");
     let has_copy = action.contains_key("copy");
     if has_copy && !action.get("copy").is_some_and(Value::is_string) {
         return Err(invalid(
