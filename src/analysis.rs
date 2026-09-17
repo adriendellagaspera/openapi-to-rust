@@ -580,6 +580,13 @@ pub struct OperationResponse {
     /// its generated schema name; text and binary bodies are represented
     /// directly by the generated client/server runtime types.
     pub body: Option<OperationResponseBody>,
+    /// Every supported transport representation retained from this Response
+    /// Object. The existing `body` field remains the preferred buffered
+    /// representation for source compatibility; this inventory preserves
+    /// alternate SSE/binary/text transports for client method planning and
+    /// generator-owned binding metadata.
+    #[serde(skip)]
+    pub representations: Vec<OperationResponseRepresentation>,
     /// Whether this response also declares `text/event-stream` content.
     pub supports_streaming: bool,
     /// Whether the Response Object declared at least one content entry.
@@ -605,6 +612,30 @@ pub enum OperationResponseBody {
     Binary {
         media_type: String,
         wildcard: bool,
+    },
+}
+
+/// One transport representation available for a declared success response.
+///
+/// This is deliberately independent from generated Rust method names. A
+/// source operation can expose several call shapes over the same HTTP path;
+/// downstream binding metadata can therefore identify the selected transport
+/// without inferring semantics from suffixes such as `_stream`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationResponseRepresentation {
+    Json {
+        schema_name: String,
+        media_type: String,
+    },
+    Text {
+        media_type: String,
+    },
+    Binary {
+        media_type: String,
+        wildcard: bool,
+    },
+    EventStream {
+        media_type: String,
     },
 }
 
@@ -8013,6 +8044,73 @@ impl SchemaAnalyzer {
                     })
                     .map(|(media_type, _)| media_type.clone())
                     .collect();
+                let mut representations = BTreeMap::new();
+                if let Some(body) = response_info.body.as_ref() {
+                    let (key, representation) = match body {
+                        OperationResponseBody::Json {
+                            schema_name,
+                            media_type,
+                        } => (
+                            format!("json:{media_type}"),
+                            OperationResponseRepresentation::Json {
+                                schema_name: schema_name.clone(),
+                                media_type: media_type.clone(),
+                            },
+                        ),
+                        OperationResponseBody::Text { media_type } => (
+                            format!("text:{media_type}"),
+                            OperationResponseRepresentation::Text {
+                                media_type: media_type.clone(),
+                            },
+                        ),
+                        OperationResponseBody::Binary {
+                            media_type,
+                            wildcard,
+                        } => (
+                            format!("binary:{media_type}"),
+                            OperationResponseRepresentation::Binary {
+                                media_type: media_type.clone(),
+                                wildcard: *wildcard,
+                            },
+                        ),
+                    };
+                    representations.insert(key, representation);
+                }
+                if let Some(content) = response.content.as_ref() {
+                    for (media_type, media) in content {
+                        let representation = match crate::openapi::classify_response_media_type(
+                            media_type,
+                            media.schema.as_ref(),
+                        ) {
+                            crate::openapi::ResponseMediaKind::EventStream => Some((
+                                format!("event_stream:{media_type}"),
+                                OperationResponseRepresentation::EventStream {
+                                    media_type: media_type.clone(),
+                                },
+                            )),
+                            crate::openapi::ResponseMediaKind::Text => Some((
+                                format!("text:{media_type}"),
+                                OperationResponseRepresentation::Text {
+                                    media_type: media_type.clone(),
+                                },
+                            )),
+                            crate::openapi::ResponseMediaKind::Binary => Some((
+                                format!("binary:{media_type}"),
+                                OperationResponseRepresentation::Binary {
+                                    media_type: media_type.clone(),
+                                    wildcard: crate::openapi::is_wildcard_media_type(media_type),
+                                },
+                            )),
+                            crate::openapi::ResponseMediaKind::Json
+                            | crate::openapi::ResponseMediaKind::Unsupported => None,
+                        };
+                        if let Some((key, representation)) = representation {
+                            representations.insert(key, representation);
+                        }
+                    }
+                }
+                response_info.representations = representations.into_values().collect();
+
                 operation_responses.insert(status_code.clone(), response_info);
             }
         }
