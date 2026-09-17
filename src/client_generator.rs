@@ -2725,7 +2725,7 @@ impl CodeGenerator {
                 MultipartClientFieldKind::RawBytes => quote! {
                     form = form.part(
                         #wire_name,
-                        reqwest::multipart::Part::bytes(value.to_vec()),
+                        reqwest::multipart::Part::bytes(value.to_vec()).file_name(#wire_name),
                     );
                 },
                 MultipartClientFieldKind::RepeatedText => quote! {

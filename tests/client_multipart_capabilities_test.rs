@@ -82,8 +82,8 @@ fn repeated_scalar_fields_and_nullable_binary_parts_generate_typed_multipart()
         "enum arrays must use repeated multipart fields: {client}"
     );
     assert!(
-        client.contains("reqwest::multipart::Part::bytes(value.to_vec())"),
-        "nullable referenced binary schemas must remain binary multipart parts: {client}"
+        client.contains("reqwest::multipart::Part::bytes(value.to_vec()).file_name(\"file\")"),
+        "binary multipart parts must carry a deterministic field-local filename: {client}"
     );
     Ok(())
 }
