@@ -212,6 +212,13 @@ struct BodyModelPlan {
     optional_fields: Vec<BodyFieldPlan>,
 }
 
+#[derive(Clone)]
+struct ClientOperationMethodPlan<'a> {
+    operation: &'a OperationInfo,
+    method_name: syn::Ident,
+    multipart_filename_method_name: Option<syn::Ident>,
+}
+
 impl CodeGenerator {
     /// Generate the HTTP client struct with middleware support
     pub fn generate_http_client_struct(&self) -> TokenStream {
@@ -535,10 +542,10 @@ impl CodeGenerator {
             .filter_map(|op| self.generate_op_error_enum(op))
             .collect();
 
-        let methods: Vec<TokenStream> = operations
+        let method_plans = self.plan_client_operation_methods(operations);
+        let methods: Vec<TokenStream> = method_plans
             .iter()
-            .copied()
-            .map(|op| self.generate_single_operation_method(analysis, op))
+            .map(|plan| self.generate_single_operation_method(analysis, plan))
             .collect();
 
         let (operation_builders, builder_entries) =
@@ -556,6 +563,38 @@ impl CodeGenerator {
                 #(#builder_entries)*
             }
         }
+    }
+
+    fn plan_client_operation_methods<'a>(
+        &self,
+        operations: &[&'a OperationInfo],
+    ) -> Vec<ClientOperationMethodPlan<'a>> {
+        let mut used_method_names: std::collections::HashSet<String> = operations
+            .iter()
+            .map(|operation| self.get_method_name(operation).to_string())
+            .collect();
+
+        operations
+            .iter()
+            .map(|operation| {
+                let operation = *operation;
+                let method_name = self.get_method_name(operation);
+                let multipart_filename_method_name = matches!(
+                    operation.request_body.as_ref(),
+                    Some(crate::analysis::RequestBodyContent::Multipart { .. })
+                )
+                .then(|| {
+                    let preferred = format!("{method_name}_with_multipart_filenames");
+                    let allocated = Self::allocate_name(&preferred, &mut used_method_names);
+                    Self::to_field_ident(&allocated)
+                });
+                ClientOperationMethodPlan {
+                    operation,
+                    method_name,
+                    multipart_filename_method_name,
+                }
+            })
+            .collect()
     }
 
     fn generate_operation_builders(
@@ -1421,18 +1460,22 @@ impl CodeGenerator {
     fn generate_single_operation_method(
         &self,
         analysis: &SchemaAnalysis,
-        op: &OperationInfo,
+        plan: &ClientOperationMethodPlan<'_>,
     ) -> TokenStream {
-        let method_name = self.get_method_name(op);
-        let base =
-            self.generate_single_operation_method_variant(analysis, op, method_name.clone(), false);
-        if matches!(
-            op.request_body.as_ref(),
-            Some(crate::analysis::RequestBodyContent::Multipart { .. })
-        ) {
-            let filename_method = format_ident!("{}_with_multipart_filenames", method_name);
-            let with_filenames =
-                self.generate_single_operation_method_variant(analysis, op, filename_method, true);
+        let op = plan.operation;
+        let base = self.generate_single_operation_method_variant(
+            analysis,
+            op,
+            plan.method_name.clone(),
+            false,
+        );
+        if let Some(filename_method) = &plan.multipart_filename_method_name {
+            let with_filenames = self.generate_single_operation_method_variant(
+                analysis,
+                op,
+                filename_method.clone(),
+                true,
+            );
             quote! {
                 #base
                 #with_filenames
@@ -1499,7 +1542,7 @@ impl CodeGenerator {
         let filename_doc = with_multipart_filenames.then(|| {
             quote! {
                 /// Override multipart filenames for binary fields by OpenAPI wire name.
-                /// Unspecified binary fields use their wire name as a deterministic fallback.
+                /// Unspecified binary fields retain the base method's no-filename behavior.
             }
         });
 
@@ -2758,25 +2801,24 @@ impl CodeGenerator {
                 };
             };
             let add_value = match kind {
-                MultipartClientFieldKind::RawBytes => {
-                    let filename = if with_multipart_filenames {
-                        quote! {
-                            multipart_filenames
-                                .iter()
-                                .find(|(field, _)| *field == #wire_name)
-                                .map(|(_, filename)| (*filename).to_string())
-                                .unwrap_or_else(|| #wire_name.to_string())
-                        }
+                MultipartClientFieldKind::RawBytes if with_multipart_filenames => quote! {
+                    let part = reqwest::multipart::Part::bytes(value.to_vec());
+                    let part = if let Some((_, filename)) = multipart_filenames
+                        .iter()
+                        .find(|(field, _)| *field == #wire_name)
+                    {
+                        part.file_name((*filename).to_string())
                     } else {
-                        quote! { #wire_name.to_string() }
+                        part
                     };
-                    quote! {
-                        form = form.part(
-                            #wire_name,
-                            reqwest::multipart::Part::bytes(value.to_vec()).file_name(#filename),
-                        );
-                    }
-                }
+                    form = form.part(#wire_name, part);
+                },
+                MultipartClientFieldKind::RawBytes => quote! {
+                    form = form.part(
+                        #wire_name,
+                        reqwest::multipart::Part::bytes(value.to_vec()),
+                    );
+                },
                 MultipartClientFieldKind::RepeatedText => quote! {
                     for item in value {
                         form = form.text(#wire_name, item.to_string());

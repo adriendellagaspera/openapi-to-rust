@@ -22,6 +22,12 @@ fn repeated_scalar_fields_and_nullable_binary_parts_generate_typed_multipart()
                     },
                     "responses": {"204": {"description": "Uploaded"}}
                 }
+            },
+            "/uploads/compat": {
+                "post": {
+                    "operationId": "createUploadWithMultipartFilenames",
+                    "responses": {"204": {"description": "Compatibility operation"}}
+                }
             }
         },
         "components": {
@@ -83,8 +89,12 @@ fn repeated_scalar_fields_and_nullable_binary_parts_generate_typed_multipart()
         "enum arrays must use repeated multipart fields: {client}"
     );
     assert!(
-        client.contains("pub async fn create_upload_with_multipart_filenames"),
-        "multipart operations must expose a per-call filename variant: {client}"
+        client.contains("pub async fn create_upload_with_multipart_filenames_2("),
+        "the additive filename variant must be allocated around real operation names: {client}"
+    );
+    assert!(
+        client.contains("pub async fn create_upload_with_multipart_filenames("),
+        "the real operation must retain its historical name: {client}"
     );
     assert!(
         client.contains("multipart_filenames: &[(&str, &str)]"),
@@ -94,10 +104,24 @@ fn repeated_scalar_fields_and_nullable_binary_parts_generate_typed_multipart()
         client.contains("*field == \"file\"") && client.contains("*field == \"thumbnail\""),
         "each binary field must resolve its own filename override: {client}"
     );
+    let base_start = client
+        .find("pub async fn create_upload(")
+        .expect("base multipart method");
+    let variant_start = client
+        .find("pub async fn create_upload_with_multipart_filenames_2(")
+        .expect("allocated filename variant");
+    let base_method = &client[base_start..variant_start];
     assert!(
-        client.contains("unwrap_or_else(|| \"file\".to_string())")
-            && client.contains("unwrap_or_else(|| \"thumbnail\".to_string())"),
-        "unconfigured binary fields need deterministic field-local fallbacks: {client}"
+        base_method.contains("reqwest::multipart::Part::bytes(value.to_vec())"),
+        "the historical multipart method must still emit raw byte parts: {base_method}"
+    );
+    assert!(
+        !base_method.contains(".file_name("),
+        "the additive filename API must not change historical multipart wire semantics: {base_method}"
+    );
+    assert!(
+        client[variant_start..].contains("part.file_name((*filename).to_string())"),
+        "the additive method must apply only explicit per-field filename overrides: {client}"
     );
     Ok(())
 }
