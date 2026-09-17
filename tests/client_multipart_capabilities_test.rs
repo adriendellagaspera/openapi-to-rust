@@ -36,7 +36,7 @@ fn repeated_scalar_fields_and_nullable_binary_parts_generate_typed_multipart()
                 },
                 "UploadRequest": {
                     "type": "object",
-                    "required": ["labels"],
+                    "required": ["labels", "file", "thumbnail"],
                     "properties": {
                         "labels": {
                             "type": "array",
@@ -51,7 +51,8 @@ fn repeated_scalar_fields_and_nullable_binary_parts_generate_typed_multipart()
                                 {"$ref": "#/components/schemas/File"},
                                 {"type": "null"}
                             ]
-                        }
+                        },
+                        "thumbnail": {"$ref": "#/components/schemas/File"}
                     }
                 }
             }
@@ -82,8 +83,22 @@ fn repeated_scalar_fields_and_nullable_binary_parts_generate_typed_multipart()
         "enum arrays must use repeated multipart fields: {client}"
     );
     assert!(
-        client.contains("reqwest::multipart::Part::bytes(value.to_vec()).file_name(\"file\")"),
-        "binary multipart parts must carry a deterministic field-local filename: {client}"
+        client.contains("pub async fn create_upload_with_multipart_filenames"),
+        "multipart operations must expose a per-call filename variant: {client}"
+    );
+    assert!(
+        client.contains("multipart_filenames: &[(&str, &str)]"),
+        "filename overrides must be request-local rather than client state: {client}"
+    );
+    assert!(
+        client.contains("*field == \"file\"")
+            && client.contains("*field == \"thumbnail\""),
+        "each binary field must resolve its own filename override: {client}"
+    );
+    assert!(
+        client.contains("unwrap_or_else(|| \"file\".to_string())")
+            && client.contains("unwrap_or_else(|| \"thumbnail\".to_string())"),
+        "unconfigured binary fields need deterministic field-local fallbacks: {client}"
     );
     Ok(())
 }
