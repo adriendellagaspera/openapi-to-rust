@@ -86,6 +86,30 @@ fn checked_planner_honors_configured_client_scope()
 }
 
 #[test]
+fn checked_planner_rejects_discriminator_outside_client_scope() {
+    let analysis = analyze().expect("fixture analysis");
+    let config = GeneratorConfig {
+        spec_path: PathBuf::from("fixture.json"),
+        output_dir: PathBuf::from("target/request-discriminator-fixture"),
+        module_name: "fixture".to_string(),
+        enable_async_client: true,
+        client: Some(ClientSection {
+            operations: vec!["POST /other".to_string()],
+            prune_models: false,
+            request_discriminators: configured_rules(),
+        }),
+        ..Default::default()
+    };
+    let error = CodeGenerator::new(config)
+        .try_plan_client_call_shapes(&analysis)
+        .expect_err("discriminator outside selected client scope must fail closed");
+    let GeneratorError::ValidationError(message) = error else {
+        panic!("expected validation error, got {error:?}");
+    };
+    assert!(message.contains("not emitted by the configured client scope"), "{message}");
+}
+
+#[test]
 fn toml_config_loads_wire_level_request_discriminator()
 -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
@@ -99,6 +123,9 @@ fn toml_config_loads_wire_level_request_discriminator()
 spec_path = "spec.json"
 output_dir = "generated"
 module_name = "fixture"
+
+[features]
+enable_async_client = true
 
 [[client.request_discriminators]]
 operation = "POST /render"
