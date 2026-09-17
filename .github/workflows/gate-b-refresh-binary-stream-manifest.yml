@@ -1,0 +1,30 @@
+name: Gate B refresh binary stream corpus manifest
+
+on:
+  push:
+    branches:
+      - gate-b-binary-streaming
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: gate-b-binary-streaming
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Refresh corpus manifest and remove helper
+        run: |
+          set -euo pipefail
+          scripts/corpus-manifest.sh
+          rm .github/workflows/gate-b-refresh-binary-stream-manifest.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tests/corpus-manifest.txt .github/workflows/gate-b-refresh-binary-stream-manifest.yml
+          git commit -m 'test: refresh binary streaming corpus manifest'
+          git push origin HEAD:gate-b-binary-streaming
