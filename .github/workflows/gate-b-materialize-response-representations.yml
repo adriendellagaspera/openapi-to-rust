@@ -1,0 +1,257 @@
+name: Gate B materialize response representations
+
+on:
+  push:
+    branches: [gate-b-response-representations]
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: gate-b-response-representations
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Materialize generic response representation analysis
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/analysis.rs')
+          text = path.read_text()
+
+          needle = '''    pub body: Option<OperationResponseBody>,
+    /// Whether this response also declares `text/event-stream` content.
+'''
+          replacement = '''    pub body: Option<OperationResponseBody>,
+    /// Every supported transport representation retained from this Response
+    /// Object. The existing `body` field remains the preferred buffered
+    /// representation for source compatibility; this inventory preserves
+    /// alternate SSE/binary/text transports for client method planning and
+    /// generator-owned binding metadata.
+    #[serde(skip)]
+    pub representations: Vec<OperationResponseRepresentation>,
+    /// Whether this response also declares `text/event-stream` content.
+'''
+          assert text.count(needle) == 1, text.count(needle)
+          text = text.replace(needle, replacement)
+
+          needle = '''pub enum OperationResponseBody {
+    Json {
+        schema_name: String,
+        media_type: String,
+    },
+    Text {
+        media_type: String,
+    },
+    Binary {
+        media_type: String,
+        wildcard: bool,
+    },
+}
+
+#[derive(Debug, Clone, Default)]
+'''
+          replacement = '''pub enum OperationResponseBody {
+    Json {
+        schema_name: String,
+        media_type: String,
+    },
+    Text {
+        media_type: String,
+    },
+    Binary {
+        media_type: String,
+        wildcard: bool,
+    },
+}
+
+/// One transport representation available for a declared success response.
+///
+/// This is deliberately independent from generated Rust method names. A
+/// source operation can expose several call shapes over the same HTTP path;
+/// downstream binding metadata can therefore identify the selected transport
+/// without inferring semantics from suffixes such as `_stream`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationResponseRepresentation {
+    Json {
+        schema_name: String,
+        media_type: String,
+    },
+    Text {
+        media_type: String,
+    },
+    Binary {
+        media_type: String,
+        wildcard: bool,
+    },
+    EventStream {
+        media_type: String,
+    },
+}
+
+#[derive(Debug, Clone, Default)]
+'''
+          assert text.count(needle) == 1, text.count(needle)
+          text = text.replace(needle, replacement)
+
+          needle = '                operation_responses.insert(status_code.clone(), response_info);\n'
+          inventory = '''                let mut representations = BTreeMap::new();
+                if let Some(body) = response_info.body.as_ref() {
+                    let (key, representation) = match body {
+                        OperationResponseBody::Json {
+                            schema_name,
+                            media_type,
+                        } => (
+                            format!("json:{media_type}"),
+                            OperationResponseRepresentation::Json {
+                                schema_name: schema_name.clone(),
+                                media_type: media_type.clone(),
+                            },
+                        ),
+                        OperationResponseBody::Text { media_type } => (
+                            format!("text:{media_type}"),
+                            OperationResponseRepresentation::Text {
+                                media_type: media_type.clone(),
+                            },
+                        ),
+                        OperationResponseBody::Binary {
+                            media_type,
+                            wildcard,
+                        } => (
+                            format!("binary:{media_type}"),
+                            OperationResponseRepresentation::Binary {
+                                media_type: media_type.clone(),
+                                wildcard: *wildcard,
+                            },
+                        ),
+                    };
+                    representations.insert(key, representation);
+                }
+                if let Some(content) = response.content.as_ref() {
+                    for (media_type, media) in content {
+                        let representation = match crate::openapi::classify_response_media_type(
+                            media_type,
+                            media.schema.as_ref(),
+                        ) {
+                            crate::openapi::ResponseMediaKind::EventStream => Some((
+                                format!("event_stream:{media_type}"),
+                                OperationResponseRepresentation::EventStream {
+                                    media_type: media_type.clone(),
+                                },
+                            )),
+                            crate::openapi::ResponseMediaKind::Text => Some((
+                                format!("text:{media_type}"),
+                                OperationResponseRepresentation::Text {
+                                    media_type: media_type.clone(),
+                                },
+                            )),
+                            crate::openapi::ResponseMediaKind::Binary => Some((
+                                format!("binary:{media_type}"),
+                                OperationResponseRepresentation::Binary {
+                                    media_type: media_type.clone(),
+                                    wildcard: crate::openapi::is_wildcard_media_type(media_type),
+                                },
+                            )),
+                            crate::openapi::ResponseMediaKind::Json
+                            | crate::openapi::ResponseMediaKind::Unsupported => None,
+                        };
+                        if let Some((key, representation)) = representation {
+                            representations.insert(key, representation);
+                        }
+                    }
+                }
+                response_info.representations = representations.into_values().collect();
+
+'''
+          assert text.count(needle) == 1, text.count(needle)
+          text = text.replace(needle, inventory + needle)
+          path.write_text(text)
+
+          test = Path('tests/response_representations_test.rs')
+          test.write_text(r'''use openapi_to_rust::SchemaAnalyzer;
+use openapi_to_rust::analysis::OperationResponseRepresentation;
+use serde_json::json;
+
+#[test]
+fn retains_alternate_response_transport_representations() {
+    let spec = json!({
+        "openapi": "3.1.0",
+        "info": { "title": "Representations", "version": "1.0.0" },
+        "paths": {
+            "/render": {
+                "post": {
+                    "operationId": "render",
+                    "responses": {
+                        "200": {
+                            "description": "ok",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/RenderResult" }
+                                },
+                                "audio/wav": {
+                                    "schema": { "type": "string", "format": "binary" }
+                                },
+                                "text/event-stream": {
+                                    "schema": { "type": "string" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "components": {
+            "schemas": {
+                "RenderResult": {
+                    "type": "object",
+                    "required": ["id"],
+                    "properties": { "id": { "type": "string" } }
+                }
+            }
+        }
+    });
+
+    let mut analyzer = SchemaAnalyzer::new(spec).expect("valid fixture");
+    let analysis = analyzer.analyze().expect("analysis succeeds");
+    let response = analysis
+        .operation_responses
+        .get("render")
+        .and_then(|responses| responses.get("200"))
+        .expect("200 response");
+
+    assert!(response.representations.iter().any(|representation| matches!(
+        representation,
+        OperationResponseRepresentation::Json { schema_name, media_type }
+            if schema_name == "RenderResult" && media_type == "application/json"
+    )));
+    assert!(response.representations.iter().any(|representation| matches!(
+        representation,
+        OperationResponseRepresentation::Binary { media_type, wildcard: false }
+            if media_type == "audio/wav"
+    )));
+    assert!(response.representations.iter().any(|representation| matches!(
+        representation,
+        OperationResponseRepresentation::EventStream { media_type }
+            if media_type == "text/event-stream"
+    )));
+}
+''')
+          PY
+          cargo fmt --all
+          cargo test --test response_representations_test
+          rm .github/workflows/gate-b-materialize-response-representations.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/analysis.rs tests/response_representations_test.rs .github/workflows/gate-b-materialize-response-representations.yml
+          git commit -m 'feat: retain response transport representations'
+          git push origin HEAD:gate-b-response-representations
