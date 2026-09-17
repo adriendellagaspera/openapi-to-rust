@@ -22,13 +22,15 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import textwrap
 
           path = Path('src/client_generator.rs')
           text = path.read_text()
 
           start = text.index('    /// Generate a single operation method\n    fn generate_single_operation_method(')
           end = text.index('    /// T3: emit the auth-token application', start)
-          replacement = r'''    /// Generate a single operation method.
+          replacement = textwrap.dedent('''\
+              /// Generate a single operation method.
               ///
               /// Multipart operations also get an additive per-call filename variant so
               /// callers can assign independent filenames without mutating client state.
@@ -142,15 +144,8 @@ jobs:
                           #header_params
                           #cookie_params
 
-                          // Apply configured authentication (T3). Was previously
-                          // hardcoded to bearer_auth regardless of GeneratorConfig.
                           #auth_application
-
-                          // Add custom headers
                           #custom_headers
-
-                          // Keep content negotiation aligned with the generated return type,
-                          // replacing any custom Accept value for this operation.
                           #accept_header
 
                           let response = req.send().await?;
@@ -159,152 +154,89 @@ jobs:
                   }
               }
 
-          '''
-          # The raw string above is indented for YAML readability; normalize only
-          # its shared 10-space prefix, preserving Rust indentation beneath it.
-          replacement = '\n'.join(
-              line[10:] if line.startswith('          ') else line
-              for line in replacement.splitlines()
-          ) + '\n'
+          ''')
           text = text[:start] + replacement + text[end:]
 
-          old_sig = '''    fn generate_typed_multipart_form(
+          old_sig = textwrap.dedent('''\
+              fn generate_typed_multipart_form(
                   &self,
                   schema_name: &str,
                   validation_schema: &serde_json::Value,
                   analysis: &SchemaAnalysis,
-              ) -> TokenStream {'''
-          if old_sig not in text:
-              old_sig = '''    fn generate_typed_multipart_form(
-                &self,
-                schema_name: &str,
-                validation_schema: &serde_json::Value,
-                analysis: &SchemaAnalysis,
-            ) -> TokenStream {'''
-          new_sig = '''    fn generate_typed_multipart_form(
-                &self,
-                schema_name: &str,
-                validation_schema: &serde_json::Value,
-                analysis: &SchemaAnalysis,
-                with_multipart_filenames: bool,
-            ) -> TokenStream {'''
+              ) -> TokenStream {
+          ''')
+          new_sig = textwrap.dedent('''\
+              fn generate_typed_multipart_form(
+                  &self,
+                  schema_name: &str,
+                  validation_schema: &serde_json::Value,
+                  analysis: &SchemaAnalysis,
+                  with_multipart_filenames: bool,
+              ) -> TokenStream {
+          ''')
           if old_sig not in text:
               raise SystemExit('multipart form signature changed')
           text = text.replace(old_sig, new_sig, 1)
 
-          old_raw = '''                MultipartClientFieldKind::RawBytes => quote! {
-                    form = form.part(
-                        #wire_name,
-                        reqwest::multipart::Part::bytes(value.to_vec()).file_name(#wire_name),
-                    );
-                },'''
-          if old_raw not in text:
-              old_raw = '''                MultipartClientFieldKind::RawBytes => quote! {
-                    form = form.part(
-                        #wire_name,
-                        reqwest::multipart::Part::bytes(value.to_vec()),
-                    );
-                },'''
-          new_raw = '''                MultipartClientFieldKind::RawBytes => {
-                    let filename = if with_multipart_filenames {
-                        quote! {
-                            multipart_filenames
-                                .iter()
-                                .find(|(field, _)| *field == #wire_name)
-                                .map(|(_, filename)| (*filename).to_string())
-                                .unwrap_or_else(|| #wire_name.to_string())
-                        }
-                    } else {
-                        quote! { #wire_name.to_string() }
-                    };
-                    quote! {
-                        form = form.part(
-                            #wire_name,
-                            reqwest::multipart::Part::bytes(value.to_vec()).file_name(#filename),
-                        );
-                    }
-                },'''
+          old_raw = textwrap.dedent('''\
+                      MultipartClientFieldKind::RawBytes => quote! {
+                          form = form.part(
+                              #wire_name,
+                              reqwest::multipart::Part::bytes(value.to_vec()).file_name(#wire_name),
+                          );
+                      },
+          ''')
+          new_raw = textwrap.dedent('''\
+                      MultipartClientFieldKind::RawBytes => {
+                          let filename = if with_multipart_filenames {
+                              quote! {
+                                  multipart_filenames
+                                      .iter()
+                                      .find(|(field, _)| *field == #wire_name)
+                                      .map(|(_, filename)| (*filename).to_string())
+                                      .unwrap_or_else(|| #wire_name.to_string())
+                              }
+                          } else {
+                              quote! { #wire_name.to_string() }
+                          };
+                          quote! {
+                              form = form.part(
+                                  #wire_name,
+                                  reqwest::multipart::Part::bytes(value.to_vec()).file_name(#filename),
+                              );
+                          }
+                      },
+          ''')
           if old_raw not in text:
               raise SystemExit('raw multipart part shape changed')
           text = text.replace(old_raw, new_raw, 1)
 
-          old_body_sig = '''    fn generate_request_body(&self, op: &OperationInfo, analysis: &SchemaAnalysis) -> TokenStream {'''
-          new_body_sig = '''    fn generate_request_body(
-                &self,
-                op: &OperationInfo,
-                analysis: &SchemaAnalysis,
-                with_multipart_filenames: bool,
-            ) -> TokenStream {'''
+          old_body_sig = '    fn generate_request_body(&self, op: &OperationInfo, analysis: &SchemaAnalysis) -> TokenStream {'
+          new_body_sig = textwrap.dedent('''\
+              fn generate_request_body(
+                  &self,
+                  op: &OperationInfo,
+                  analysis: &SchemaAnalysis,
+                  with_multipart_filenames: bool,
+              ) -> TokenStream {
+          ''').rstrip('\n')
           if old_body_sig not in text:
               raise SystemExit('request body signature changed')
           text = text.replace(old_body_sig, new_body_sig, 1)
 
-          old_call = '''                self.generate_typed_multipart_form(schema_name, validation_schema, analysis),'''
-          new_call = '''                self.generate_typed_multipart_form(
-                    schema_name,
-                    validation_schema,
-                    analysis,
-                    with_multipart_filenames,
-                ),'''
+          old_call = '                self.generate_typed_multipart_form(schema_name, validation_schema, analysis),'
+          new_call = textwrap.dedent('''\
+                              self.generate_typed_multipart_form(
+                                  schema_name,
+                                  validation_schema,
+                                  analysis,
+                                  with_multipart_filenames,
+                              ),
+          ''').rstrip('\n')
           if old_call not in text:
               raise SystemExit('typed multipart call changed')
           text = text.replace(old_call, new_call, 1)
           path.write_text(text)
-
-          test = Path('tests/client_multipart_capabilities_test.rs')
-          t = test.read_text()
-          t = t.replace(
-              '"required": ["labels"],',
-              '"required": ["labels", "file", "thumbnail"],',
-              1,
-          )
-          old_file = '''                        "file": {
-                            "anyOf": [
-                                {"$ref": "#/components/schemas/File"},
-                                {"type": "null"}
-                            ]
-                        }'''
-          new_file = '''                        "file": {
-                            "anyOf": [
-                                {"$ref": "#/components/schemas/File"},
-                                {"type": "null"}
-                            ]
-                        },
-                        "thumbnail": {"$ref": "#/components/schemas/File"}'''
-          if old_file not in t:
-              raise SystemExit('multipart fixture file field changed')
-          t = t.replace(old_file, new_file, 1)
-          old_assert = '''    assert!(
-                client.contains("reqwest::multipart::Part::bytes(value.to_vec()).file_name(\\\"file\\\")"),
-                "binary multipart parts must carry a deterministic field-local filename: {client}"
-            );'''
-          if old_assert not in t:
-              old_assert = '''    assert!(
-                client.contains("reqwest::multipart::Part::bytes(value.to_vec())"),
-                "nullable referenced binary schemas must remain binary multipart parts: {client}"
-            );'''
-          new_assert = '''    assert!(
-                client.contains("pub async fn create_upload_with_multipart_filenames"),
-                "multipart operations must expose a per-call filename variant: {client}"
-            );
-            assert!(
-                client.contains("multipart_filenames: &[(&str, &str)]"),
-                "filename overrides must be request-local rather than client state: {client}"
-            );
-            assert!(
-                client.contains("*field == \\\"file\\\"")
-                    && client.contains("*field == \\\"thumbnail\\\""),
-                "each binary field must resolve its own filename override: {client}"
-            );
-            assert!(
-                client.contains("unwrap_or_else(|| \\\"file\\\".to_string())")
-                    && client.contains("unwrap_or_else(|| \\\"thumbnail\\\".to_string())"),
-                "unconfigured binary fields need deterministic field-local fallbacks: {client}"
-            );'''
-          if old_assert not in t:
-              raise SystemExit('multipart filename assertion changed')
-          t = t.replace(old_assert, new_assert, 1)
-          test.write_text(t)
           PY
       - name: Validate focused change
         run: |
