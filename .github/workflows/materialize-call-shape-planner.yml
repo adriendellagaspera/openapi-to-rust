@@ -26,7 +26,7 @@ jobs:
         run: rm .github/materializers/call_shape_planner.py .github/materializers/call_shape_planner_post.py .github/workflows/materialize-call-shape-planner.yml
       - run: cargo fmt --all
       - name: Focused tests
-        run: cargo test --test client_response_call_shapes_test --test client_binary_stream_capabilities_test --test client_builder_test
+        run: cargo test --test client_response_call_shapes_test --test client_binary_stream_capabilities_test --test operation_builder_test
       - name: Strict clippy
         run: cargo clippy --all-features -- -D warnings
       - name: Refresh generated corpus tripwire
