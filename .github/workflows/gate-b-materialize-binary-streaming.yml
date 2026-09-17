@@ -29,7 +29,7 @@ jobs:
               global text
               count = text.count(old)
               if count != 1:
-                  raise SystemExit(f'expected one match, got {count}: {old[:100]!r}')
+                  raise SystemExit(f'expected one match, got {count}: {old[:120]!r}')
               text = text.replace(old, new, 1)
 
           replace_once(
@@ -134,7 +134,8 @@ jobs:
                           }
           ''')
 
-          old_method = '''    fn generate_single_operation_method(
+          replace_once(
+          '''    fn generate_single_operation_method(
                   &self,
                   analysis: &SchemaAnalysis,
                   plan: &ClientOperationMethodPlan<'_>,
@@ -161,8 +162,8 @@ jobs:
                       base
                   }
               }
-          '''
-          new_method = '''    fn generate_single_operation_method(
+          ''',
+          '''    fn generate_single_operation_method(
                   &self,
                   analysis: &SchemaAnalysis,
                   plan: &ClientOperationMethodPlan<'_>,
@@ -195,14 +196,23 @@ jobs:
                   }
                   quote! { #(#methods)* }
               }
-          '''
-          replace_once(old_method, new_method)
+          ''')
 
           replace_once(
-          '''        with_multipart_filenames: bool,
+          '''    fn generate_single_operation_method_variant(
+                  &self,
+                  analysis: &SchemaAnalysis,
+                  op: &OperationInfo,
+                  method_name: syn::Ident,
+                  with_multipart_filenames: bool,
               ) -> TokenStream {
           ''',
-          '''        with_multipart_filenames: bool,
+          '''    fn generate_single_operation_method_variant(
+                  &self,
+                  analysis: &SchemaAnalysis,
+                  op: &OperationInfo,
+                  method_name: syn::Ident,
+                  with_multipart_filenames: bool,
                   response_representation: ClientResponseRepresentation,
               ) -> TokenStream {
           ''')
@@ -301,7 +311,7 @@ jobs:
 
           path.write_text(text)
 
-          test = r'''use openapi_to_rust::{CodeGenerator, GeneratorConfig, SchemaAnalyzer};
+          Path('tests/client_binary_stream_capabilities_test.rs').write_text(r'''use openapi_to_rust::{CodeGenerator, GeneratorConfig, SchemaAnalyzer};
           use serde_json::json;
           use std::path::PathBuf;
 
@@ -384,8 +394,7 @@ jobs:
               );
               Ok(())
           }
-          '''
-          Path('tests/client_binary_stream_capabilities_test.rs').write_text(test)
+          ''')
           PY
           cargo fmt --all
           cargo test --test client_binary_stream_capabilities_test --test client_sse_capabilities_test
