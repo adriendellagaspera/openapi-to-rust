@@ -16,8 +16,8 @@ def replace_once(old: str, new: str) -> None:
 # Builders share the exact operation/call-shape plan used by flat methods,
 # including collision-safe names and selected return types.
 replace_once(
-    "        let (builder_definitions, builder_entries) =\n            self.generate_operation_builders(analysis, operations);",
-    "        let (builder_definitions, builder_entries) =\n            self.generate_operation_builders(analysis, &method_plans);",
+    "        let (operation_builders, builder_entries) =\n            self.generate_operation_builders(analysis, operations);",
+    "        let (operation_builders, builder_entries) =\n            self.generate_operation_builders(analysis, &method_plans);",
 )
 
 start = text.index("    fn generate_operation_builders(")
