@@ -1,0 +1,72 @@
+name: Gate B multipart filename materialize
+
+on:
+  push:
+    branches: [gate-b-multipart-filenames]
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: gate-b-multipart-filenames
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Apply focused generic change
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/client_generator.rs')
+          text = path.read_text()
+          old = '''                MultipartClientFieldKind::RawBytes => quote! {
+                    form = form.part(
+                        #wire_name,
+                        reqwest::multipart::Part::bytes(value.to_vec()),
+                    );
+                },'''
+          new = '''                MultipartClientFieldKind::RawBytes => quote! {
+                    form = form.part(
+                        #wire_name,
+                        reqwest::multipart::Part::bytes(value.to_vec()).file_name(#wire_name),
+                    );
+                },'''
+          if old in text:
+              text = text.replace(old, new, 1)
+              path.write_text(text)
+          elif new not in text:
+              raise SystemExit('multipart RawBytes generation shape changed; review required')
+
+          test = Path('tests/client_multipart_capabilities_test.rs')
+          text = test.read_text()
+          old = '''        client.contains("reqwest::multipart::Part::bytes(value.to_vec())"),
+        "nullable referenced binary schemas must remain binary multipart parts: {client}"'''
+          new = '''        client.contains(
+            "reqwest::multipart::Part::bytes(value.to_vec()).file_name(\\\"file\\\")"
+        ),
+        "binary multipart parts must carry a deterministic field-local filename: {client}"'''
+          if old in text:
+              text = text.replace(old, new, 1)
+              test.write_text(text)
+          elif new not in text:
+              raise SystemExit('multipart capability assertion shape changed; review required')
+          PY
+      - name: Format and validate
+        run: |
+          cargo fmt --all
+          cargo test --test client_multipart_capabilities_test
+          cargo clippy --test client_multipart_capabilities_test -- -D warnings
+      - name: Commit materialized change
+        run: |
+          if git diff --quiet; then
+            echo 'Already materialized.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/client_generator.rs tests/client_multipart_capabilities_test.rs
+          git commit -m 'fix: attach filenames to binary multipart parts'
+          git push origin HEAD:gate-b-multipart-filenames
