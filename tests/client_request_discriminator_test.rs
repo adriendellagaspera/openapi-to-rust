@@ -2,7 +2,7 @@ use openapi_to_rust::client_generator::{
     ClientRequestDiscriminatorPlan, ClientResponseRepresentation,
 };
 use openapi_to_rust::config::{
-    ClientSection, RequestDiscriminatorRule, RequestDiscriminatorTransport,
+    ClientSection, ConfigFile, RequestDiscriminatorRule, RequestDiscriminatorTransport,
     RequestDiscriminatorValue,
 };
 use openapi_to_rust::{CodeGenerator, GeneratorConfig, GeneratorError, SchemaAnalyzer};
@@ -279,4 +279,95 @@ fn metadata_type_is_serializable_without_rust_method_semantics() {
     let value = serde_json::to_value(plan).expect("serializable discriminator plan");
     assert_eq!(value["wire_name"], "live-output");
     assert!(value.get("rust_method_name").is_none());
+}
+
+#[test]
+fn checked_planner_honors_configured_client_scope() -> Result<(), Box<dyn std::error::Error>> {
+    let analysis = analyze()?;
+    let mut config = GeneratorConfig {
+        spec_path: PathBuf::from("fixture.json"),
+        output_dir: PathBuf::from("target/request-discriminator-fixture"),
+        module_name: "fixture".to_string(),
+        enable_async_client: true,
+        client: Some(ClientSection {
+            operations: vec!["POST /render".to_string()],
+            prune_models: false,
+            request_discriminators: configured_rules(),
+        }),
+        ..Default::default()
+    };
+    config.enable_sse_client = false;
+    let plans = CodeGenerator::new(config).try_plan_client_call_shapes(&analysis)?;
+    assert!(!plans.is_empty());
+    assert!(
+        plans
+            .iter()
+            .all(|plan| plan.source_operation.operation_id == "render")
+    );
+    Ok(())
+}
+
+#[test]
+fn checked_planner_rejects_discriminator_outside_client_scope() {
+    let analysis = analyze().expect("fixture analysis");
+    let config = GeneratorConfig {
+        spec_path: PathBuf::from("fixture.json"),
+        output_dir: PathBuf::from("target/request-discriminator-fixture"),
+        module_name: "fixture".to_string(),
+        enable_async_client: true,
+        client: Some(ClientSection {
+            operations: vec!["POST /other".to_string()],
+            prune_models: false,
+            request_discriminators: configured_rules(),
+        }),
+        ..Default::default()
+    };
+    let error = CodeGenerator::new(config)
+        .try_plan_client_call_shapes(&analysis)
+        .expect_err("discriminator outside selected client scope must fail closed");
+    let GeneratorError::ValidationError(message) = error else {
+        panic!("expected validation error, got {error:?}");
+    };
+    assert!(
+        message.contains("not emitted by the configured client scope"),
+        "{message}"
+    );
+}
+
+#[test]
+fn toml_config_loads_wire_level_request_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let spec_path = dir.path().join("spec.json");
+    std::fs::write(&spec_path, serde_json::to_vec_pretty(&spec())?)?;
+    let config_path = dir.path().join("openapi-to-rust.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[generator]
+spec_path = "spec.json"
+output_dir = "generated"
+module_name = "fixture"
+
+[features]
+enable_async_client = true
+
+[[client.request_discriminators]]
+operation = "POST /render"
+transport = "event_stream"
+media_type = "text/event-stream"
+field = "live-output"
+value = true
+"#,
+    )?;
+
+    let config = ConfigFile::load(&config_path)?;
+    let client = config.client.expect("client config");
+    assert_eq!(client.request_discriminators.len(), 1);
+    let rule = &client.request_discriminators[0];
+    assert_eq!(rule.operation, "POST /render");
+    assert_eq!(rule.transport, RequestDiscriminatorTransport::EventStream);
+    assert_eq!(rule.media_type, "text/event-stream");
+    assert_eq!(rule.field, "live-output");
+    assert_eq!(rule.value, RequestDiscriminatorValue::Bool(true));
+    Ok(())
 }

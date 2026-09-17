@@ -1306,7 +1306,7 @@ impl CodeGenerator {
         })
     }
 
-    fn resolve_client_operation_ids(
+    pub(crate) fn resolve_client_operation_ids(
         &self,
         analysis: &SchemaAnalysis,
     ) -> Result<Option<std::collections::BTreeSet<String>>> {
@@ -1331,7 +1331,7 @@ impl CodeGenerator {
         }
     }
 
-    fn client_operations<'a>(
+    pub(crate) fn client_operations<'a>(
         &self,
         analysis: &'a SchemaAnalysis,
         selected: Option<&std::collections::BTreeSet<String>>,

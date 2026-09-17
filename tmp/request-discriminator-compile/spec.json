@@ -1,0 +1,44 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "discriminator compile", "version": "1.0.0"},
+  "paths": {
+    "/render": {
+      "post": {
+        "operationId": "render",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RenderRequest"}}}
+        },
+        "responses": {
+          "200": {
+            "description": "buffered or live",
+            "content": {
+              "application/json": {"schema": {"$ref": "#/components/schemas/RenderResult"}},
+              "text/event-stream": {"schema": {"type": "string"}}
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {"schemas": {
+    "RenderMode": {
+      "type": "string",
+      "enum": ["buffered-result", "live-events"],
+      "x-enum-varnames": ["BufferedResult", "LiveEvents"]
+    },
+    "RenderRequest": {
+      "type": "object",
+      "required": ["live-output", "response-mode"],
+      "properties": {
+        "live-output": {"type": "boolean"},
+        "response-mode": {"$ref": "#/components/schemas/RenderMode"}
+      }
+    },
+    "RenderResult": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {"id": {"type": "string"}}
+    }
+  }}
+}

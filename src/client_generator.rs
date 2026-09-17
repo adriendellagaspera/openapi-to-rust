@@ -730,7 +730,8 @@ impl CodeGenerator {
         &self,
         analysis: &SchemaAnalysis,
     ) -> crate::Result<Vec<ClientCallShapePlan>> {
-        let operations: Vec<&OperationInfo> = analysis.operations.values().collect();
+        let client_ids = self.resolve_client_operation_ids(analysis)?;
+        let operations = self.client_operations(analysis, client_ids.as_ref());
         self.validate_client_request_discriminators(analysis, &operations)?;
         Ok(self
             .plan_client_operation_methods(analysis, &operations)
