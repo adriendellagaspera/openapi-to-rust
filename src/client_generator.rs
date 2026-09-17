@@ -3182,7 +3182,9 @@ impl CodeGenerator {
             ClientSuccessBody::Text => quote! { String },
             ClientSuccessBody::Binary => quote! { bytes::Bytes },
             ClientSuccessBody::EventStream => {
-                quote! { impl futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>> }
+                quote! {
+                    impl futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + 'static
+                }
             }
             ClientSuccessBody::Empty => quote! { () },
         }
