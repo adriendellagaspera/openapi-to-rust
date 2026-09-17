@@ -22,217 +22,195 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          import textwrap
 
           path = Path('src/client_generator.rs')
           text = path.read_text()
 
           start = text.index('    /// Generate a single operation method\n    fn generate_single_operation_method(')
           end = text.index('    /// T3: emit the auth-token application', start)
-          replacement = textwrap.dedent('''\
-              /// Generate a single operation method.
-              ///
-              /// Multipart operations also get an additive per-call filename variant so
-              /// callers can assign independent filenames without mutating client state.
-              fn generate_single_operation_method(
-                  &self,
-                  analysis: &SchemaAnalysis,
-                  op: &OperationInfo,
-              ) -> TokenStream {
-                  let method_name = self.get_method_name(op);
-                  let base = self.generate_single_operation_method_variant(
-                      analysis,
-                      op,
-                      method_name.clone(),
-                      false,
-                  );
-                  if matches!(
-                      op.request_body.as_ref(),
-                      Some(crate::analysis::RequestBodyContent::Multipart { .. })
-                  ) {
-                      let filename_method = format_ident!("{}_with_multipart_filenames", method_name);
-                      let with_filenames = self.generate_single_operation_method_variant(
-                          analysis,
-                          op,
-                          filename_method,
-                          true,
-                      );
-                      quote! {
-                          #base
-                          #with_filenames
-                      }
-                  } else {
-                      base
-                  }
-              }
-
-              fn generate_single_operation_method_variant(
-                  &self,
-                  analysis: &SchemaAnalysis,
-                  op: &OperationInfo,
-                  method_name: syn::Ident,
-                  with_multipart_filenames: bool,
-              ) -> TokenStream {
-                  let http_method_call = self.http_method_call(op);
-                  let path = &op.path;
-                  let request_param = self.generate_request_param(op);
-                  let request_params = if with_multipart_filenames {
-                      if request_param.is_empty() {
-                          quote! { multipart_filenames: &[(&str, &str)] }
-                      } else {
-                          quote! { #request_param, multipart_filenames: &[(&str, &str)] }
-                      }
-                  } else {
-                      request_param
-                  };
-                  let request_body =
-                      self.generate_request_body(op, analysis, with_multipart_filenames);
-                  let query_params = self.generate_query_params(op);
-                  let header_params = self.generate_header_params(op);
-                  let cookie_params = self.generate_cookie_params(op);
-                  let auth_application = self.generate_auth_application();
-                  let success = self.get_success_response(analysis, op);
-                  let response_type = self.get_response_type(analysis, op);
-                  let op_error_type = self.op_error_type_token(op);
-                  let accept = success.accept;
-                  let error_handling = self.generate_error_handling(op, success);
-                  let (custom_headers, accept_header) = if let Some(media_type) = accept {
-                      (
-                          quote! {
-                              for (name, value) in &self.custom_headers {
-                                  if !name.eq_ignore_ascii_case("accept") {
-                                      req = req.header(name, value);
-                                  }
-                              }
-                          },
-                          quote! {
-                              req = req.header(reqwest::header::ACCEPT, #media_type);
-                          },
-                      )
-                  } else {
-                      (
-                          quote! {
-                              for (name, value) in &self.custom_headers {
-                                  req = req.header(name, value);
-                              }
-                          },
-                          TokenStream::new(),
-                      )
-                  };
-                  let url_construction = self.generate_url_construction(path, op);
-                  let doc_comment = self.generate_operation_doc_comment(op);
-                  let filename_doc = with_multipart_filenames.then(|| {
-                      quote! {
-                          /// Override multipart filenames for binary fields by OpenAPI wire name.
-                          /// Unspecified binary fields use their wire name as a deterministic fallback.
-                      }
-                  });
-
-                  quote! {
-                      #doc_comment
-                      #filename_doc
-                      pub async fn #method_name(
-                          &self,
-                          #request_params
-                      ) -> Result<#response_type, ApiOpError<#op_error_type>> {
-                          #url_construction
-
-                          let mut req = #http_method_call;
-                          #request_body
-
-                          #query_params
-                          #header_params
-                          #cookie_params
-
-                          #auth_application
-                          #custom_headers
-                          #accept_header
-
-                          let response = req.send().await?;
-                          #error_handling
-                      }
-                  }
-              }
-
-          ''')
+          replacement = "\n".join([
+              "    /// Generate a single operation method.",
+              "    ///",
+              "    /// Multipart operations also get an additive per-call filename variant so",
+              "    /// callers can assign independent filenames without mutating client state.",
+              "    fn generate_single_operation_method(",
+              "        &self,",
+              "        analysis: &SchemaAnalysis,",
+              "        op: &OperationInfo,",
+              "    ) -> TokenStream {",
+              "        let method_name = self.get_method_name(op);",
+              "        let base = self.generate_single_operation_method_variant(",
+              "            analysis,",
+              "            op,",
+              "            method_name.clone(),",
+              "            false,",
+              "        );",
+              "        if matches!(",
+              "            op.request_body.as_ref(),",
+              "            Some(crate::analysis::RequestBodyContent::Multipart { .. })",
+              "        ) {",
+              "            let filename_method = format_ident!(\"{}_with_multipart_filenames\", method_name);",
+              "            let with_filenames = self.generate_single_operation_method_variant(",
+              "                analysis,",
+              "                op,",
+              "                filename_method,",
+              "                true,",
+              "            );",
+              "            quote! {",
+              "                #base",
+              "                #with_filenames",
+              "            }",
+              "        } else {",
+              "            base",
+              "        }",
+              "    }",
+              "",
+              "    fn generate_single_operation_method_variant(",
+              "        &self,",
+              "        analysis: &SchemaAnalysis,",
+              "        op: &OperationInfo,",
+              "        method_name: syn::Ident,",
+              "        with_multipart_filenames: bool,",
+              "    ) -> TokenStream {",
+              "        let http_method_call = self.http_method_call(op);",
+              "        let path = &op.path;",
+              "        let request_param = self.generate_request_param(op);",
+              "        let request_params = if with_multipart_filenames {",
+              "            if request_param.is_empty() {",
+              "                quote! { multipart_filenames: &[(&str, &str)] }",
+              "            } else {",
+              "                quote! { #request_param, multipart_filenames: &[(&str, &str)] }",
+              "            }",
+              "        } else {",
+              "            request_param",
+              "        };",
+              "        let request_body =",
+              "            self.generate_request_body(op, analysis, with_multipart_filenames);",
+              "        let query_params = self.generate_query_params(op);",
+              "        let header_params = self.generate_header_params(op);",
+              "        let cookie_params = self.generate_cookie_params(op);",
+              "        let auth_application = self.generate_auth_application();",
+              "        let success = self.get_success_response(analysis, op);",
+              "        let response_type = self.get_response_type(analysis, op);",
+              "        let op_error_type = self.op_error_type_token(op);",
+              "        let accept = success.accept;",
+              "        let error_handling = self.generate_error_handling(op, success);",
+              "        let (custom_headers, accept_header) = if let Some(media_type) = accept {",
+              "            (",
+              "                quote! {",
+              "                    for (name, value) in &self.custom_headers {",
+              "                        if !name.eq_ignore_ascii_case(\"accept\") {",
+              "                            req = req.header(name, value);",
+              "                        }",
+              "                    }",
+              "                },",
+              "                quote! {",
+              "                    req = req.header(reqwest::header::ACCEPT, #media_type);",
+              "                },",
+              "            )",
+              "        } else {",
+              "            (",
+              "                quote! {",
+              "                    for (name, value) in &self.custom_headers {",
+              "                        req = req.header(name, value);",
+              "                    }",
+              "                },",
+              "                TokenStream::new(),",
+              "            )",
+              "        };",
+              "        let url_construction = self.generate_url_construction(path, op);",
+              "        let doc_comment = self.generate_operation_doc_comment(op);",
+              "        let filename_doc = with_multipart_filenames.then(|| {",
+              "            quote! {",
+              "                /// Override multipart filenames for binary fields by OpenAPI wire name.",
+              "                /// Unspecified binary fields use their wire name as a deterministic fallback.",
+              "            }",
+              "        });",
+              "",
+              "        quote! {",
+              "            #doc_comment",
+              "            #filename_doc",
+              "            pub async fn #method_name(",
+              "                &self,",
+              "                #request_params",
+              "            ) -> Result<#response_type, ApiOpError<#op_error_type>> {",
+              "                #url_construction",
+              "",
+              "                let mut req = #http_method_call;",
+              "                #request_body",
+              "",
+              "                #query_params",
+              "                #header_params",
+              "                #cookie_params",
+              "                #auth_application",
+              "                #custom_headers",
+              "                #accept_header",
+              "",
+              "                let response = req.send().await?;",
+              "                #error_handling",
+              "            }",
+              "        }",
+              "    }",
+              "",
+          ])
           text = text[:start] + replacement + text[end:]
 
-          old_sig = textwrap.dedent('''\
-              fn generate_typed_multipart_form(
-                  &self,
-                  schema_name: &str,
-                  validation_schema: &serde_json::Value,
-                  analysis: &SchemaAnalysis,
-              ) -> TokenStream {
-          ''')
-          new_sig = textwrap.dedent('''\
-              fn generate_typed_multipart_form(
-                  &self,
-                  schema_name: &str,
-                  validation_schema: &serde_json::Value,
-                  analysis: &SchemaAnalysis,
-                  with_multipart_filenames: bool,
-              ) -> TokenStream {
-          ''')
-          if old_sig not in text:
-              raise SystemExit('multipart form signature changed')
-          text = text.replace(old_sig, new_sig, 1)
+          fn_start = text.index('    fn generate_typed_multipart_form(')
+          sig_end = text.index('    ) -> TokenStream {', fn_start)
+          sig = text[fn_start:sig_end]
+          marker = '        analysis: &SchemaAnalysis,\n'
+          if marker not in sig:
+              raise SystemExit('multipart form analysis parameter changed')
+          sig = sig.replace(marker, marker + '        with_multipart_filenames: bool,\n', 1)
+          text = text[:fn_start] + sig + text[sig_end:]
 
-          old_raw = textwrap.dedent('''\
-                      MultipartClientFieldKind::RawBytes => quote! {
-                          form = form.part(
-                              #wire_name,
-                              reqwest::multipart::Part::bytes(value.to_vec()).file_name(#wire_name),
-                          );
-                      },
-          ''')
-          new_raw = textwrap.dedent('''\
-                      MultipartClientFieldKind::RawBytes => {
-                          let filename = if with_multipart_filenames {
-                              quote! {
-                                  multipart_filenames
-                                      .iter()
-                                      .find(|(field, _)| *field == #wire_name)
-                                      .map(|(_, filename)| (*filename).to_string())
-                                      .unwrap_or_else(|| #wire_name.to_string())
-                              }
-                          } else {
-                              quote! { #wire_name.to_string() }
-                          };
-                          quote! {
-                              form = form.part(
-                                  #wire_name,
-                                  reqwest::multipart::Part::bytes(value.to_vec()).file_name(#filename),
-                              );
-                          }
-                      },
-          ''')
-          if old_raw not in text:
-              raise SystemExit('raw multipart part shape changed')
-          text = text.replace(old_raw, new_raw, 1)
+          raw_start = text.index('                MultipartClientFieldKind::RawBytes => quote! {')
+          raw_end = text.index('                MultipartClientFieldKind::RepeatedText =>', raw_start)
+          raw = "\n".join([
+              "                MultipartClientFieldKind::RawBytes => {",
+              "                    let filename = if with_multipart_filenames {",
+              "                        quote! {",
+              "                            multipart_filenames",
+              "                                .iter()",
+              "                                .find(|(field, _)| *field == #wire_name)",
+              "                                .map(|(_, filename)| (*filename).to_string())",
+              "                                .unwrap_or_else(|| #wire_name.to_string())",
+              "                        }",
+              "                    } else {",
+              "                        quote! { #wire_name.to_string() }",
+              "                    };",
+              "                    quote! {",
+              "                        form = form.part(",
+              "                            #wire_name,",
+              "                            reqwest::multipart::Part::bytes(value.to_vec()).file_name(#filename),",
+              "                        );",
+              "                    }",
+              "                },",
+          ]) + "\n"
+          text = text[:raw_start] + raw + text[raw_end:]
 
-          old_body_sig = '    fn generate_request_body(&self, op: &OperationInfo, analysis: &SchemaAnalysis) -> TokenStream {'
-          new_body_sig = textwrap.dedent('''\
-              fn generate_request_body(
-                  &self,
-                  op: &OperationInfo,
-                  analysis: &SchemaAnalysis,
-                  with_multipart_filenames: bool,
-              ) -> TokenStream {
-          ''').rstrip('\n')
-          if old_body_sig not in text:
+          old_body = '    fn generate_request_body(&self, op: &OperationInfo, analysis: &SchemaAnalysis) -> TokenStream {'
+          new_body = "\n".join([
+              "    fn generate_request_body(",
+              "        &self,",
+              "        op: &OperationInfo,",
+              "        analysis: &SchemaAnalysis,",
+              "        with_multipart_filenames: bool,",
+              "    ) -> TokenStream {",
+          ])
+          if old_body not in text:
               raise SystemExit('request body signature changed')
-          text = text.replace(old_body_sig, new_body_sig, 1)
+          text = text.replace(old_body, new_body, 1)
 
           old_call = '                self.generate_typed_multipart_form(schema_name, validation_schema, analysis),'
-          new_call = textwrap.dedent('''\
-                              self.generate_typed_multipart_form(
-                                  schema_name,
-                                  validation_schema,
-                                  analysis,
-                                  with_multipart_filenames,
-                              ),
-          ''').rstrip('\n')
+          new_call = "\n".join([
+              "                self.generate_typed_multipart_form(",
+              "                    schema_name,",
+              "                    validation_schema,",
+              "                    analysis,",
+              "                    with_multipart_filenames,",
+              "                ),",
+          ])
           if old_call not in text:
               raise SystemExit('typed multipart call changed')
           text = text.replace(old_call, new_call, 1)
