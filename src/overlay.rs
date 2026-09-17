@@ -70,7 +70,11 @@ pub fn apply_overlay_file(document: &mut Value, path: &Path) -> Result<(), Overl
 /// Apply an already-parsed Overlay 1.1 document.
 ///
 /// This is primarily useful to embedders that already own parsing/I/O.
-pub fn apply_overlay(document: &mut Value, overlay: &Value, source: &Path) -> Result<(), OverlayError> {
+pub fn apply_overlay(
+    document: &mut Value,
+    overlay: &Value,
+    source: &Path,
+) -> Result<(), OverlayError> {
     let root = require_object(overlay, source, "root")?;
     validate_fields(
         root,
@@ -102,7 +106,10 @@ pub fn apply_overlay(document: &mut Value, overlay: &Value, source: &Path) -> Re
     if let Some(extends) = root.get("extends")
         && !extends.is_string()
     {
-        return Err(invalid(source, "root.extends must be a string URI reference"));
+        return Err(invalid(
+            source,
+            "root.extends must be a string URI reference",
+        ));
     }
 
     let actions = root
@@ -183,15 +190,6 @@ fn apply_action(
             format!("{context}.copy must be an RFC 9535 JSONPath string"),
         ));
     }
-    let modifier_count = usize::from(remove) + usize::from(has_update) + usize::from(has_copy);
-    if modifier_count != 1 {
-        return Err(invalid(
-            source,
-            format!(
-                "{context} must contain exactly one active modifier: update, copy, or remove: true"
-            ),
-        ));
-    }
 
     let paths = document.query_only_path(target).map_err(|error| {
         invalid(
@@ -219,35 +217,38 @@ fn apply_action(
         return Ok(());
     }
 
-    ensure_homogeneous_targets(document, &paths, source, &context)?;
-    let modifier = if has_update {
-        action
-            .get("update")
-            .cloned()
-            .ok_or_else(|| invalid(source, format!("{context}.update is missing")))?
-    } else {
-        let copy = action
-            .get("copy")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid(source, format!("{context}.copy is missing")))?;
-        let copied = document.query(copy).map_err(|error| {
-            invalid(
-                source,
-                format!("{context} copy `{copy}` is not valid RFC 9535 JSONPath: {error}"),
-            )
-        })?;
-        if copied.len() != 1 {
-            return Err(invalid(
-                source,
-                format!(
-                    "{context} copy `{copy}` must select exactly one node; selected {}",
-                    copied.len()
-                ),
-            ));
+    // Overlay 1.1 defines modifier precedence explicitly. `remove: true`
+    // suppresses both `update` and `copy`; when both `update` and `copy` are
+    // present they suppress each other, so the action is a no-op after target
+    // evaluation. A target-only action is likewise valid and has no effect.
+    let modifier = match (action.get("update"), action.get("copy")) {
+        (Some(_), Some(_)) => return Ok(()),
+        (Some(update), None) => update.clone(),
+        (None, Some(copy)) => {
+            let copy = copy
+                .as_str()
+                .ok_or_else(|| invalid(source, format!("{context}.copy is missing")))?;
+            let copied = document.query(copy).map_err(|error| {
+                invalid(
+                    source,
+                    format!("{context} copy `{copy}` is not valid RFC 9535 JSONPath: {error}"),
+                )
+            })?;
+            if copied.len() != 1 {
+                return Err(invalid(
+                    source,
+                    format!(
+                        "{context} copy `{copy}` must select exactly one node; selected {}",
+                        copied.len()
+                    ),
+                ));
+            }
+            (*copied[0]).clone()
         }
-        copied[0].clone()
+        (None, None) => return Ok(()),
     };
 
+    ensure_homogeneous_targets(document, &paths, source, &context)?;
     for path in paths {
         let selected = document.reference_mut(path.clone()).ok_or_else(|| {
             invalid(
@@ -255,7 +256,12 @@ fn apply_action(
                 format!("{context} target node `{path}` disappeared during application"),
             )
         })?;
-        apply_modifier(selected, &modifier, source, &format!("{context} target `{path}`"))?;
+        apply_modifier(
+            selected,
+            &modifier,
+            source,
+            &format!("{context} target `{path}`"),
+        )?;
     }
     Ok(())
 }
@@ -343,9 +349,7 @@ fn apply_modifier(
         }
         _ => Err(invalid(
             source,
-            format!(
-                "{context} is primitive but its update/copy value is not primitive"
-            ),
+            format!("{context} is primitive but its update/copy value is not primitive"),
         )),
     }
 }
@@ -396,7 +400,8 @@ fn validate_version(version: &str, source: &Path) -> Result<(), OverlayError> {
     let patch = parts.next();
     let valid = major == Some("1")
         && minor == Some("1")
-        && patch.is_some_and(|value| !value.is_empty() && value.chars().all(|c| c.is_ascii_digit()))
+        && patch
+            .is_some_and(|value| !value.is_empty() && value.chars().all(|c| c.is_ascii_digit()))
         && parts.next().is_none();
     if valid {
         Ok(())
@@ -544,8 +549,54 @@ mod tests {
             overlay(json!([{"target": "$.targets[*]", "copy": "$.template"}])),
         )
         .expect("valid overlay");
-        assert_eq!(document["targets"][0], json!({"headers": ["b", "a"], "enabled": true}));
-        assert_eq!(document["targets"][1], json!({"headers": ["c", "a"], "enabled": true}));
+        assert_eq!(
+            document["targets"][0],
+            json!({"headers": ["b", "a"], "enabled": true})
+        );
+        assert_eq!(
+            document["targets"][1],
+            json!({"headers": ["c", "a"], "enabled": true})
+        );
+    }
+
+    #[test]
+    fn remove_takes_precedence_over_update_and_copy() {
+        let mut document = json!({"items": [{"name": "keep"}, {"name": "drop"}], "source": {}});
+        apply(
+            &mut document,
+            overlay(json!([{
+                "target": "$.items[?@.name == 'drop']",
+                "update": {"ignored": true},
+                "copy": "$.source",
+                "remove": true
+            }])),
+        )
+        .expect("remove takes precedence");
+        assert_eq!(document["items"], json!([{"name": "keep"}]));
+    }
+
+    #[test]
+    fn simultaneous_update_and_copy_is_a_noop() {
+        let mut document = json!({"target": {"value": 1}, "source": {"value": 2}});
+        let before = document.clone();
+        apply(
+            &mut document,
+            overlay(json!([{
+                "target": "$.target",
+                "update": {"value": 3},
+                "copy": "$.source"
+            }])),
+        )
+        .expect("update and copy suppress each other");
+        assert_eq!(document, before);
+    }
+
+    #[test]
+    fn target_only_action_is_a_noop() {
+        let mut document = json!({"target": {"value": 1}});
+        let before = document.clone();
+        apply(&mut document, overlay(json!([{"target": "$.target"}]))).expect("valid no-op");
+        assert_eq!(document, before);
     }
 
     #[test]
