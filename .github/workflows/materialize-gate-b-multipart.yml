@@ -53,7 +53,8 @@ jobs:
           use std::path::PathBuf;
 
           #[test]
-          fn repeated_scalar_fields_and_nullable_binary_parts_generate_typed_multipart() {
+          fn repeated_scalar_fields_and_nullable_binary_parts_generate_typed_multipart(
+          ) -> Result<(), Box<dyn std::error::Error>> {
               let spec = json!({
                   "openapi": "3.1.0",
                   "info": {"title": "Multipart Fixture", "version": "1.0.0"},
@@ -107,8 +108,8 @@ jobs:
                   }
               });
 
-              let mut analyzer = SchemaAnalyzer::new(spec).expect("create analyzer");
-              let analysis = analyzer.analyze().expect("analyze multipart fixture");
+              let mut analyzer = SchemaAnalyzer::new(spec)?;
+              let analysis = analyzer.analyze()?;
               let generator = CodeGenerator::new(GeneratorConfig {
                   spec_path: PathBuf::from("fixture.json"),
                   output_dir: PathBuf::from("target/multipart-fixture"),
@@ -116,9 +117,7 @@ jobs:
                   enable_async_client: true,
                   ..Default::default()
               });
-              let client = generator
-                  .generate_http_client(&analysis)
-                  .expect("generate multipart client");
+              let client = generator.generate_http_client(&analysis)?;
 
               assert!(!client.contains("must be binary or a scalar text field"), "{client}");
               assert!(
@@ -133,6 +132,7 @@ jobs:
                   client.contains("reqwest::multipart::Part::bytes(value.to_vec())"),
                   "nullable referenced binary schemas must remain binary multipart parts: {client}"
               );
+              Ok(())
           }
           ''')
           PY
