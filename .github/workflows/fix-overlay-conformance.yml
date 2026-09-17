@@ -1,0 +1,80 @@
+name: Fix Overlay conformance
+
+on:
+  push:
+    branches: [feat/openapi-overlay-1-1]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/openapi-overlay-1-1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Allow repeated actions and add regression coverage
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/overlay.rs')
+          text = path.read_text()
+          text = text.replace('use std::collections::BTreeSet;\n', '')
+          old = '''    let mut seen = BTreeSet::new();
+    for (index, action) in actions.iter().enumerate() {
+        let canonical = serde_json::to_string(action).map_err(|error| {
+            invalid(
+                source,
+                format!("action {} cannot be normalized: {error}", index + 1),
+            )
+        })?;
+        if !seen.insert(canonical) {
+            return Err(invalid(
+                source,
+                format!("action {} duplicates an earlier action", index + 1),
+            ));
+        }
+        apply_action(document, action, source, index + 1)?;
+    }
+'''
+          new = '''    for (index, action) in actions.iter().enumerate() {
+        apply_action(document, action, source, index + 1)?;
+    }
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected duplicate-action guard exactly once, got {text.count(old)}')
+          text = text.replace(old, new, 1)
+          anchor = '''    #[test]
+    fn update_merges_objects_concatenates_arrays_and_replaces_primitives() {
+'''
+          test = '''    #[test]
+    fn repeated_actions_are_applied_sequentially() {
+        let mut document = json!({"items": []});
+        let action = json!({"target": "$.items", "update": "x"});
+        apply(
+            &mut document,
+            overlay(json!([action.clone(), action])),
+        )
+        .expect("repeated actions are valid");
+        assert_eq!(document["items"], json!(["x", "x"]));
+    }
+
+'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f'expected test anchor exactly once, got {text.count(anchor)}')
+          text = text.replace(anchor, test + anchor, 1)
+          path.write_text(text)
+          PY
+          cargo fmt --all
+          rm .github/workflows/fix-overlay-conformance.yml
+      - name: Commit fix
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix: apply repeated Overlay actions sequentially"
+          git push
