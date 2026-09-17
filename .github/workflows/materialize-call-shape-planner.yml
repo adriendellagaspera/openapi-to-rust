@@ -1,3 +1,4 @@
+# One-shot branch materializer; removed by the job before its code commit.
 name: Materialize call-shape planner
 
 on:
