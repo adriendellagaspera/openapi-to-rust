@@ -1,0 +1,142 @@
+name: Finalize request discriminators
+on:
+  push:
+    branches: [gate-b-request-discriminators]
+permissions:
+  contents: write
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Apply final confidence fixes
+        run: python .github/materializers/request_discriminators_finalize.py
+      - name: Remove one-shot finalizer
+        run: |
+          rm -f .github/materializers/request_discriminators_finalize.py
+          rm -f .github/workflows/finalize-request-discriminators.yml
+      - name: Format
+        run: cargo fmt --all
+      - name: Focused tests
+        run: cargo test --test client_request_discriminator_test --test client_response_call_shapes_test --test operation_builder_test --test selective_client_test
+      - name: Strict clippy
+        run: cargo clippy --all-features -- -D warnings
+      - name: Compile generated client with active discriminators
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --bin openapi-to-rust
+          ROOT="$(pwd)/tmp/request-discriminator-compile"
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/src/generated"
+          cat > "$ROOT/spec.json" <<'JSON'
+          {
+            "openapi": "3.1.0",
+            "info": {"title": "discriminator compile", "version": "1.0.0"},
+            "paths": {
+              "/render": {
+                "post": {
+                  "operationId": "render",
+                  "requestBody": {
+                    "required": true,
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RenderRequest"}}}
+                  },
+                  "responses": {
+                    "200": {
+                      "description": "buffered or live",
+                      "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/RenderResult"}},
+                        "text/event-stream": {"schema": {"type": "string"}}
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "components": {"schemas": {
+              "RenderMode": {
+                "type": "string",
+                "enum": ["buffered-result", "live-events"],
+                "x-enum-varnames": ["BufferedResult", "LiveEvents"]
+              },
+              "RenderRequest": {
+                "type": "object",
+                "required": ["live-output", "response-mode"],
+                "properties": {
+                  "live-output": {"type": "boolean"},
+                  "response-mode": {"$ref": "#/components/schemas/RenderMode"}
+                }
+              },
+              "RenderResult": {
+                "type": "object",
+                "required": ["id"],
+                "properties": {"id": {"type": "string"}}
+              }
+            }}
+          }
+          JSON
+          cat > "$ROOT/openapi-to-rust.toml" <<'TOML'
+          [generator]
+          spec_path = "spec.json"
+          output_dir = "src/generated"
+          module_name = "generated"
+
+          [features]
+          enable_async_client = true
+          enable_sse_client = false
+
+          [[client.request_discriminators]]
+          operation = "POST /render"
+          transport = "buffered"
+          media_type = "application/json"
+          field = "live-output"
+          value = false
+
+          [[client.request_discriminators]]
+          operation = "POST /render"
+          transport = "event_stream"
+          media_type = "text/event-stream"
+          field = "live-output"
+          value = true
+
+          [[client.request_discriminators]]
+          operation = "POST /render"
+          transport = "event_stream"
+          media_type = "text/event-stream"
+          field = "response-mode"
+          value = "live-events"
+          TOML
+          cat > "$ROOT/src/lib.rs" <<'RS'
+          #![allow(dead_code, unused_imports, clippy::all)]
+          pub mod generated;
+          RS
+          (cd "$ROOT" && "${GITHUB_WORKSPACE}/target/debug/openapi-to-rust" generate --config openapi-to-rust.toml)
+          {
+            echo '[workspace]'
+            echo
+            echo '[package]'
+            echo 'name = "request-discriminator-compile"'
+            echo 'version = "0.0.0"'
+            echo 'edition = "2024"'
+            echo 'publish = false'
+            echo
+            cat "$ROOT/src/generated/REQUIRED_DEPS.toml"
+          } > "$ROOT/Cargo.toml"
+          (cd "$ROOT" && CARGO_TARGET_DIR="${GITHUB_WORKSPACE}/tmp/request-discriminator-target" cargo check)
+      - name: Refresh generated corpus tripwire
+        run: scripts/corpus-manifest.sh
+      - name: Commit final implementation
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'No changes to commit'
+            exit 0
+          fi
+          git commit -m 'test: align discriminator metadata with client scope'
+          git push origin HEAD:gate-b-request-discriminators
