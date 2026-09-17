@@ -25,30 +25,16 @@ jobs:
 
           path = Path('src/client_generator.rs')
           text = path.read_text()
-          old = '''                MultipartClientFieldKind::RawBytes => quote! {
-                    form = form.part(
-                        #wire_name,
-                        reqwest::multipart::Part::bytes(value.to_vec()),
-                    );
-                },'''
-          new = '''                MultipartClientFieldKind::RawBytes => quote! {
-                    form = form.part(
-                        #wire_name,
-                        reqwest::multipart::Part::bytes(value.to_vec()).file_name(#wire_name),
-                    );
-                },'''
+          old = "                MultipartClientFieldKind::RawBytes => quote! {\n                    form = form.part(\n                        #wire_name,\n                        reqwest::multipart::Part::bytes(value.to_vec()),\n                    );\n                },"
+          new = "                MultipartClientFieldKind::RawBytes => quote! {\n                    form = form.part(\n                        #wire_name,\n                        reqwest::multipart::Part::bytes(value.to_vec()).file_name(#wire_name),\n                    );\n                },"
           if old not in text:
               raise SystemExit('multipart RawBytes generation shape changed; review required')
           path.write_text(text.replace(old, new, 1))
 
           test = Path('tests/client_multipart_capabilities_test.rs')
           text = test.read_text()
-          old = '''        client.contains("reqwest::multipart::Part::bytes(value.to_vec())"),
-        "nullable referenced binary schemas must remain binary multipart parts: {client}"'''
-          new = '''        client.contains(
-            "reqwest::multipart::Part::bytes(value.to_vec()).file_name(\\\"file\\\")"
-        ),
-        "binary multipart parts must carry a deterministic field-local filename: {client}"'''
+          old = '        client.contains("reqwest::multipart::Part::bytes(value.to_vec())"),\n        "nullable referenced binary schemas must remain binary multipart parts: {client}"'
+          new = '        client.contains(\n            "reqwest::multipart::Part::bytes(value.to_vec()).file_name(\\\"file\\\")"\n        ),\n        "binary multipart parts must carry a deterministic field-local filename: {client}"'
           if old not in text:
               raise SystemExit('multipart capability assertion shape changed; review required')
           test.write_text(text.replace(old, new, 1))
