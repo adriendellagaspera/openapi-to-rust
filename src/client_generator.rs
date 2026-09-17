@@ -3182,7 +3182,7 @@ impl CodeGenerator {
             ClientSuccessBody::Text => quote! { String },
             ClientSuccessBody::Binary => quote! { bytes::Bytes },
             ClientSuccessBody::EventStream => {
-                quote! { impl futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>> }
+                quote! { futures_util::stream::BoxStream<'static, Result<bytes::Bytes, reqwest::Error>> }
             }
             ClientSuccessBody::Empty => quote! { () },
         }
@@ -3292,7 +3292,7 @@ impl CodeGenerator {
                 let headers = response.headers().clone();
 
                 if #success_status_guard {
-                    Ok(response.bytes_stream())
+                    Ok(Box::pin(response.bytes_stream()))
                 } else {
                     if status.is_success() {
                         return Err(ApiOpError::Api(ApiError {
