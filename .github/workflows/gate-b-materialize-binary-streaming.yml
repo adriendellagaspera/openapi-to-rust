@@ -1,0 +1,397 @@
+name: Gate B materialize binary streaming
+
+on:
+  push:
+    branches: [gate-b-binary-streaming]
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: gate-b-binary-streaming
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Apply focused generator change
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/client_generator.rs')
+          text = path.read_text()
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one match, got {count}: {old[:100]!r}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+          '''#[derive(Clone, Copy)]
+          enum ClientSuccessBody<'a> {
+              Json(&'a str),
+              Text,
+              Binary,
+              EventStream,
+              Empty,
+          }
+          ''',
+          '''#[derive(Clone, Copy)]
+          enum ClientSuccessBody<'a> {
+              Json(&'a str),
+              Text,
+              Binary,
+              EventStream,
+              Empty,
+          }
+
+          #[derive(Clone, Copy, PartialEq, Eq)]
+          enum ClientResponseRepresentation {
+              Default,
+              BinaryStream,
+          }
+          ''')
+
+          replace_once(
+          '''struct ClientOperationMethodPlan<'a> {
+              operation: &'a OperationInfo,
+              method_name: syn::Ident,
+              multipart_filename_method_name: Option<syn::Ident>,
+          }
+          ''',
+          '''struct ClientOperationMethodPlan<'a> {
+              operation: &'a OperationInfo,
+              method_name: syn::Ident,
+              multipart_filename_method_name: Option<syn::Ident>,
+              binary_stream_method_name: Option<syn::Ident>,
+          }
+          ''')
+
+          replace_once(
+          '''        let has_event_stream = operations.iter().any(|operation| {
+                      matches!(
+                          self.get_success_response(analysis, operation).body,
+                          ClientSuccessBody::EventStream
+                      )
+                  });
+                  if !has_event_stream {
+          ''',
+          '''        let has_streaming_response = operations.iter().any(|operation| {
+                      matches!(
+                          self.get_success_response(analysis, operation).body,
+                          ClientSuccessBody::EventStream | ClientSuccessBody::Binary
+                      )
+                  });
+                  if !has_streaming_response {
+          ''')
+
+          replace_once(
+          '''        let method_plans = self.plan_client_operation_methods(operations);
+          ''',
+          '''        let method_plans = self.plan_client_operation_methods(analysis, operations);
+          ''')
+
+          replace_once(
+          '''    fn plan_client_operation_methods<'a>(
+                  &self,
+                  operations: &[&'a OperationInfo],
+              ) -> Vec<ClientOperationMethodPlan<'a>> {
+          ''',
+          '''    fn plan_client_operation_methods<'a>(
+                  &self,
+                  analysis: &'a SchemaAnalysis,
+                  operations: &[&'a OperationInfo],
+              ) -> Vec<ClientOperationMethodPlan<'a>> {
+          ''')
+
+          replace_once(
+          '''                ClientOperationMethodPlan {
+                              operation,
+                              method_name,
+                              multipart_filename_method_name,
+                          }
+          ''',
+          '''                let binary_stream_method_name = matches!(
+                              self.get_success_response(analysis, operation).body,
+                              ClientSuccessBody::Binary
+                          )
+                          .then(|| {
+                              let preferred = format!("{method_name}_stream");
+                              let allocated = Self::allocate_name(&preferred, &mut used_method_names);
+                              Self::to_field_ident(&allocated)
+                          });
+                          ClientOperationMethodPlan {
+                              operation,
+                              method_name,
+                              multipart_filename_method_name,
+                              binary_stream_method_name,
+                          }
+          ''')
+
+          old_method = '''    fn generate_single_operation_method(
+                  &self,
+                  analysis: &SchemaAnalysis,
+                  plan: &ClientOperationMethodPlan<'_>,
+              ) -> TokenStream {
+                  let op = plan.operation;
+                  let base = self.generate_single_operation_method_variant(
+                      analysis,
+                      op,
+                      plan.method_name.clone(),
+                      false,
+                  );
+                  if let Some(filename_method) = &plan.multipart_filename_method_name {
+                      let with_filenames = self.generate_single_operation_method_variant(
+                          analysis,
+                          op,
+                          filename_method.clone(),
+                          true,
+                      );
+                      quote! {
+                          #base
+                          #with_filenames
+                      }
+                  } else {
+                      base
+                  }
+              }
+          '''
+          new_method = '''    fn generate_single_operation_method(
+                  &self,
+                  analysis: &SchemaAnalysis,
+                  plan: &ClientOperationMethodPlan<'_>,
+              ) -> TokenStream {
+                  let op = plan.operation;
+                  let mut methods = vec![self.generate_single_operation_method_variant(
+                      analysis,
+                      op,
+                      plan.method_name.clone(),
+                      false,
+                      ClientResponseRepresentation::Default,
+                  )];
+                  if let Some(filename_method) = &plan.multipart_filename_method_name {
+                      methods.push(self.generate_single_operation_method_variant(
+                          analysis,
+                          op,
+                          filename_method.clone(),
+                          true,
+                          ClientResponseRepresentation::Default,
+                      ));
+                  }
+                  if let Some(binary_stream_method) = &plan.binary_stream_method_name {
+                      methods.push(self.generate_single_operation_method_variant(
+                          analysis,
+                          op,
+                          binary_stream_method.clone(),
+                          false,
+                          ClientResponseRepresentation::BinaryStream,
+                      ));
+                  }
+                  quote! { #(#methods)* }
+              }
+          '''
+          replace_once(old_method, new_method)
+
+          replace_once(
+          '''        with_multipart_filenames: bool,
+              ) -> TokenStream {
+          ''',
+          '''        with_multipart_filenames: bool,
+                  response_representation: ClientResponseRepresentation,
+              ) -> TokenStream {
+          ''')
+
+          replace_once(
+          '''        let success = self.get_success_response(analysis, op);
+                  let response_type = self.get_response_type(analysis, op);
+                  let op_error_type = self.op_error_type_token(op);
+                  let accept = success.accept;
+                  let error_handling = self.generate_error_handling(op, success);
+          ''',
+          '''        let success = self.get_success_response(analysis, op);
+                  let response_type = match response_representation {
+                      ClientResponseRepresentation::Default => self.get_response_type(analysis, op),
+                      ClientResponseRepresentation::BinaryStream => quote! { HttpResponseByteStream },
+                  };
+                  let op_error_type = self.op_error_type_token(op);
+                  let accept = success.accept;
+                  let error_handling =
+                      self.generate_error_handling(op, success, response_representation);
+          ''')
+
+          replace_once(
+          '''        let filename_doc = with_multipart_filenames.then(|| {
+                      quote! {
+                          /// Override multipart filenames for binary fields by OpenAPI wire name.
+                          /// Unspecified binary fields retain the base method's no-filename behavior.
+                      }
+                  });
+
+                  quote! {
+                      #doc_comment
+                      #filename_doc
+          ''',
+          '''        let filename_doc = with_multipart_filenames.then(|| {
+                      quote! {
+                          /// Override multipart filenames for binary fields by OpenAPI wire name.
+                          /// Unspecified binary fields retain the base method's no-filename behavior.
+                      }
+                  });
+                  let representation_doc = matches!(
+                      response_representation,
+                      ClientResponseRepresentation::BinaryStream
+                  )
+                  .then(|| {
+                      quote! {
+                          /// Stream the successful binary response body without buffering it.
+                      }
+                  });
+
+                  quote! {
+                      #doc_comment
+                      #filename_doc
+                      #representation_doc
+          ''')
+
+          replace_once(
+          '''    fn generate_error_handling(
+                  &self,
+                  op: &OperationInfo,
+                  success: ClientSuccessSelection<'_>,
+              ) -> TokenStream {
+          ''',
+          '''    fn generate_error_handling(
+                  &self,
+                  op: &OperationInfo,
+                  success: ClientSuccessSelection<'_>,
+                  response_representation: ClientResponseRepresentation,
+              ) -> TokenStream {
+          ''')
+
+          replace_once(
+          '''        // Streaming success path: hand back the live byte stream instead of
+                  // buffering it. Reading an SSE body to a string blocks until the server
+                  // closes the connection, which is precisely what it will not do.
+                  // The error path still buffers — an error response is finite.
+                  if matches!(success_body, ClientSuccessBody::EventStream) {
+          ''',
+          '''        // Streaming success path: hand back the live byte stream instead of
+                  // buffering it. SSE is intrinsically streaming; binary responses expose
+                  // this as an additive representation while retaining their buffered method.
+                  // The error path still buffers — an error response is finite and bounded.
+                  let streams_success = matches!(success_body, ClientSuccessBody::EventStream)
+                      || matches!(
+                          response_representation,
+                          ClientResponseRepresentation::BinaryStream
+                      );
+                  debug_assert!(
+                      !matches!(
+                          response_representation,
+                          ClientResponseRepresentation::BinaryStream
+                      ) || matches!(success_body, ClientSuccessBody::Binary)
+                  );
+                  if streams_success {
+          ''')
+
+          path.write_text(text)
+
+          test = r'''use openapi_to_rust::{CodeGenerator, GeneratorConfig, SchemaAnalyzer};
+          use serde_json::json;
+          use std::path::PathBuf;
+
+          fn generator() -> CodeGenerator {
+              CodeGenerator::new(GeneratorConfig {
+                  spec_path: PathBuf::from("fixture.json"),
+                  output_dir: PathBuf::from("target/binary-stream-fixture"),
+                  module_name: "fixture".to_string(),
+                  enable_async_client: true,
+                  ..Default::default()
+              })
+          }
+
+          #[test]
+          fn binary_success_keeps_buffered_method_and_adds_collision_safe_stream_method(
+          ) -> Result<(), Box<dyn std::error::Error>> {
+              let spec = json!({
+                  "openapi": "3.1.0",
+                  "info": {"title": "Binary Fixture", "version": "1.0.0"},
+                  "paths": {
+                      "/download": {
+                          "get": {
+                              "operationId": "downloadFile",
+                              "responses": {
+                                  "200": {
+                                      "description": "Binary response",
+                                      "content": {
+                                          "application/octet-stream": {
+                                              "schema": {"type": "string", "format": "binary"}
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+                      },
+                      "/already-stream": {
+                          "get": {
+                              "operationId": "downloadFileStream",
+                              "responses": {
+                                  "200": {
+                                      "description": "Existing operation whose Rust name reserves the preferred suffix",
+                                      "content": {
+                                          "application/json": {
+                                              "schema": {"type": "string"}
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+              });
+
+              let mut analyzer = SchemaAnalyzer::new(spec)?;
+              let analysis = analyzer.analyze()?;
+              let client = generator().generate_http_client(&analysis)?;
+
+              assert!(
+                  client.contains("pub async fn download_file(")
+                      && client.contains("Result<bytes::Bytes, ApiOpError<"),
+                  "binary responses must retain the existing buffered method: {client}"
+              );
+              assert!(
+                  client.contains("pub async fn download_file_stream_2(")
+                      && client.contains("Result<HttpResponseByteStream, ApiOpError<"),
+                  "binary streaming must be additive and collision-safe: {client}"
+              );
+              assert!(
+                  client.contains("Ok(bytes::Bytes::from(body_bytes))"),
+                  "the buffered representation must remain bounded and materialized: {client}"
+              );
+              assert!(
+                  client.contains("Ok(Box::pin(response.bytes_stream()))"),
+                  "the streaming representation must return the live response body: {client}"
+              );
+              assert!(
+                  client.contains("pub type HttpResponseByteStream = futures_util::stream::BoxStream")
+                      && client.contains("pub type HttpResponseByteStream = futures_util::stream::LocalBoxStream"),
+                  "binary streaming must use the same portable owned ABI as SSE: {client}"
+              );
+              Ok(())
+          }
+          '''
+          Path('tests/client_binary_stream_capabilities_test.rs').write_text(test)
+          PY
+          cargo fmt --all
+          cargo test --test client_binary_stream_capabilities_test --test client_sse_capabilities_test
+          rm .github/workflows/gate-b-materialize-binary-streaming.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/client_generator.rs tests/client_binary_stream_capabilities_test.rs .github/workflows/gate-b-materialize-binary-streaming.yml
+          git commit -m 'feat: add generic binary response streaming'
+          git push origin HEAD:gate-b-binary-streaming
