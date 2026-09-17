@@ -771,62 +771,56 @@ impl CodeGenerator {
         }
 
         let candidates = self.success_response_candidates(analysis, operation);
-        let selected_response = candidates
-            .iter()
-            .find(|(_, response)| {
-                Self::preferred_response_representation(response) == base.representation
-            })
-            .map(|(_, response)| *response);
-
-        if let Some(response) = selected_response {
+        let mut alternate_representations = Vec::new();
+        for (_, response) in &candidates {
             for representation in response
                 .representations
                 .iter()
                 .map(Self::response_representation_from_inventory)
             {
-                if representation == base.representation
-                    || call_shapes
-                        .iter()
-                        .any(|shape| shape.representation == representation)
+                if representation != base.representation
+                    && !alternate_representations.contains(&representation)
                 {
-                    continue;
+                    alternate_representations.push(representation);
                 }
+            }
+        }
 
-                let statuses: Vec<String> = candidates
-                    .iter()
-                    .filter_map(|(status, candidate)| {
-                        Self::response_has_representation(candidate, &representation)
-                            .then_some((*status).to_string())
-                    })
-                    .collect();
-                if statuses.is_empty() {
-                    continue;
-                }
+        for representation in alternate_representations {
+            let statuses: Vec<String> = candidates
+                .iter()
+                .filter_map(|(status, candidate)| {
+                    Self::response_has_representation(candidate, &representation)
+                        .then_some((*status).to_string())
+                })
+                .collect();
+            if statuses.is_empty() {
+                continue;
+            }
 
-                let preferred =
-                    Self::preferred_alternate_method_name(base_method_name, &representation);
-                let method_name = Self::allocate_name(&preferred, used_method_names);
-                let shape = self.build_call_shape_plan(
+            let preferred =
+                Self::preferred_alternate_method_name(base_method_name, &representation);
+            let method_name = Self::allocate_name(&preferred, used_method_names);
+            let shape = self.build_call_shape_plan(
+                analysis,
+                operation,
+                method_name,
+                representation,
+                statuses,
+            );
+            call_shapes.push(shape.clone());
+
+            if matches!(
+                shape.representation,
+                ClientResponseRepresentation::BinaryBuffered { .. }
+            ) {
+                self.push_binary_stream_shape(
                     analysis,
                     operation,
-                    method_name,
-                    representation,
-                    statuses,
+                    &shape,
+                    used_method_names,
+                    &mut call_shapes,
                 );
-                call_shapes.push(shape.clone());
-
-                if matches!(
-                    shape.representation,
-                    ClientResponseRepresentation::BinaryBuffered { .. }
-                ) {
-                    self.push_binary_stream_shape(
-                        analysis,
-                        operation,
-                        &shape,
-                        used_method_names,
-                        &mut call_shapes,
-                    );
-                }
             }
         }
 

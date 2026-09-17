@@ -17,71 +17,95 @@ fn generator() -> CodeGenerator {
 fn plans_multiple_response_call_shapes_without_using_rust_names_as_identity()
 -> Result<(), Box<dyn std::error::Error>> {
     let spec = json!({
-        "openapi": "3.1.0",
-        "info": {"title": "Response Call Shapes", "version": "1.0.0"},
-        "paths": {
-            "/json-only": {
-                "get": {
-                    "operationId": "jsonOnly",
-                    "responses": {
-                        "200": {
-                            "description": "json",
-                            "content": {
-                                "application/json": {
-                                    "schema": {"$ref": "#/components/schemas/RenderResult"}
+            "openapi": "3.1.0",
+            "info": {"title": "Response Call Shapes", "version": "1.0.0"},
+            "paths": {
+                "/json-only": {
+                    "get": {
+                        "operationId": "jsonOnly",
+                        "responses": {
+                            "200": {
+                                "description": "json",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {"$ref": "#/components/schemas/RenderResult"}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "/render": {
+                    "post": {
+                        "operationId": "render",
+                        "responses": {
+                            "200": {
+                                "description": "multiple representations",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {"$ref": "#/components/schemas/RenderResult"}
+                                    },
+                                    "audio/wav": {
+                                        "schema": {"type": "string", "format": "binary"}
+                                    },
+                                    "text/event-stream": {
+                                        "schema": {"type": "string"}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "/reserved-stream-name": {
+                    "get": {
+                        "operationId": "renderStream",
+                        "responses": {
+                            "200": {
+                                "description": "reserve the preferred generated suffix",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {"$ref": "#/components/schemas/RenderResult"}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+    ,
+                "/status-split": {
+                    "post": {
+                        "operationId": "statusSplit",
+                        "responses": {
+                            "200": {
+                                "description": "buffered json",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {"$ref": "#/components/schemas/RenderResult"}
+                                    }
+                                }
+                            },
+                            "201": {
+                                "description": "event stream",
+                                "content": {
+                                    "text/event-stream": {
+                                        "schema": {"type": "string"}
+                                    }
                                 }
                             }
                         }
                     }
                 }
             },
-            "/render": {
-                "post": {
-                    "operationId": "render",
-                    "responses": {
-                        "200": {
-                            "description": "multiple representations",
-                            "content": {
-                                "application/json": {
-                                    "schema": {"$ref": "#/components/schemas/RenderResult"}
-                                },
-                                "audio/wav": {
-                                    "schema": {"type": "string", "format": "binary"}
-                                },
-                                "text/event-stream": {
-                                    "schema": {"type": "string"}
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "/reserved-stream-name": {
-                "get": {
-                    "operationId": "renderStream",
-                    "responses": {
-                        "200": {
-                            "description": "reserve the preferred generated suffix",
-                            "content": {
-                                "application/json": {
-                                    "schema": {"$ref": "#/components/schemas/RenderResult"}
-                                }
-                            }
-                        }
+            "components": {
+                "schemas": {
+                    "RenderResult": {
+                        "type": "object",
+                        "required": ["id"],
+                        "properties": {"id": {"type": "string"}}
                     }
                 }
             }
-        },
-        "components": {
-            "schemas": {
-                "RenderResult": {
-                    "type": "object",
-                    "required": ["id"],
-                    "properties": {"id": {"type": "string"}}
-                }
-            }
-        }
-    });
+        });
 
     let mut analyzer = SchemaAnalyzer::new(spec)?;
     let analysis = analyzer.analyze()?;
@@ -159,12 +183,31 @@ fn plans_multiple_response_call_shapes_without_using_rust_names_as_identity()
     assert_eq!(sse.source_operation.method, "POST");
     assert_eq!(sse.source_operation.path, "/render");
 
+    let status_split: Vec<_> = plan
+        .iter()
+        .filter(|shape| shape.source_operation.operation_id == "statusSplit")
+        .collect();
+    assert_eq!(status_split.len(), 2, "{status_split:#?}");
+    let status_split_sse = status_split
+        .iter()
+        .find(|shape| {
+            matches!(
+                &shape.representation,
+                ClientResponseRepresentation::EventStream { media_type }
+                    if media_type == "text/event-stream"
+            )
+        })
+        .expect("cross-status SSE call shape");
+    assert_eq!(status_split_sse.success_statuses, ["201"]);
+    assert_eq!(status_split_sse.rust_method_name, "status_split_stream");
+
     let client = generator.generate_http_client(&analysis)?;
     for method in [
         "pub async fn render(",
         "pub async fn render_wav(",
         "pub async fn render_wav_stream(",
         "pub async fn render_stream_2(",
+        "pub async fn status_split_stream(",
     ] {
         assert!(client.contains(method), "missing `{method}` in:\n{client}");
     }
