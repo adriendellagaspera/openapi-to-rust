@@ -19,7 +19,20 @@ jobs:
           components: clippy,rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Apply focused source transformation
-        run: python .github/materializers/call_shape_planner.py
+        run: |
+          python .github/materializers/call_shape_planner.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/client_generator.rs')
+          text = path.read_text()
+          old = '        let response_type = self.get_response_type(analysis, operation);'
+          new = '''        let base_success = self.get_success_response(analysis, operation);
+                  let response_type_name = self.success_type_name(&base_success.representation);
+                  let response_type: syn::Type = syn::parse_str(&response_type_name)
+                      .expect("planned client success type must be valid Rust");'''
+          assert text.count(old) == 1, text.count(old)
+          path.write_text(text.replace(old, new, 1))
+          PY
       - name: Remove materializer
         run: rm .github/materializers/call_shape_planner.py .github/workflows/materialize-call-shape-planner.yml
       - run: cargo fmt --all
