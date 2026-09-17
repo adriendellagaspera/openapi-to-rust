@@ -1,0 +1,42 @@
+name: Fix Overlay lint cleanup
+
+on:
+  push:
+    branches: [feat/openapi-overlay-1-1]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/openapi-overlay-1-1
+      - name: Remove stale binding and workflow
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/overlay.rs')
+          text = path.read_text()
+          old = '    let has_update = action.contains_key("update");\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one stale binding, got {text.count(old)}')
+          path.write_text(text.replace(old, '', 1))
+          PY
+          rm .github/workflows/fix-overlay-lint.yml
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+      - name: Validate cleanup
+        run: |
+          cargo fmt --all --check
+          cargo clippy --all-targets --all-features -- -D warnings
+      - name: Commit cleanup
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix: remove stale Overlay modifier binding"
+          git push
