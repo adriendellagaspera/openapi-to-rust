@@ -18,6 +18,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      - name: Apply conformance fixes
+        run: python scripts/fix-overlay-validation.py
       - name: Validate and capture output
         id: validate
         shell: bash
@@ -28,17 +30,20 @@ jobs:
           check_status=$?
           cargo test --lib overlay >> overlay-validation.log 2>&1
           test_status=$?
+          cargo test --test cli_workflow_test config_overlays_are_config_relative_deterministic_and_checked >> overlay-validation.log 2>&1
+          cli_status=$?
           set -e
-          printf '\ncheck_status=%s\ntest_status=%s\n' "$check_status" "$test_status" >> overlay-validation.log
+          printf '\ncheck_status=%s\ntest_status=%s\ncli_status=%s\n' "$check_status" "$test_status" "$cli_status" >> overlay-validation.log
           echo "check_status=$check_status" >> "$GITHUB_OUTPUT"
           echo "test_status=$test_status" >> "$GITHUB_OUTPUT"
-      - name: Commit validation log
+          echo "cli_status=$cli_status" >> "$GITHUB_OUTPUT"
+      - name: Commit fixed implementation and validation log
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add overlay-validation.log
-          git commit -m "ci: capture overlay validation output"
+          git add src/overlay.rs tests/config_test.rs overlay-validation.log
+          git commit -m "fix: align Overlay actions with 1.1 semantics"
           git push
       - name: Propagate validation result
-        if: steps.validate.outputs.check_status != '0' || steps.validate.outputs.test_status != '0'
+        if: steps.validate.outputs.check_status != '0' || steps.validate.outputs.test_status != '0' || steps.validate.outputs.cli_status != '0'
         run: exit 1
