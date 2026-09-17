@@ -25,13 +25,27 @@ jobs:
           from pathlib import Path
           path = Path('src/client_generator.rs')
           text = path.read_text()
-          old = '        let response_type = self.get_response_type(analysis, operation);'
-          new = '''        let base_success = self.get_success_response(analysis, operation);
+
+          old_builder = '        let response_type = self.get_response_type(analysis, operation);'
+          new_builder = '''        let base_success = self.get_success_response(analysis, operation);
                   let response_type_name = self.success_type_name(&base_success.representation);
-                  let response_type: syn::Type = syn::parse_str(&response_type_name)
+                  let response_type = match syn::parse_str::<syn::Type>(&response_type_name) {
+                      Ok(response_type) => quote! { #response_type },
+                      Err(error) => error.to_compile_error(),
+                  };'''
+          assert text.count(old_builder) == 1, text.count(old_builder)
+          text = text.replace(old_builder, new_builder, 1)
+
+          old_variant = '''        let response_type: syn::Type = syn::parse_str(&call_shape.success_type)
                       .expect("planned client success type must be valid Rust");'''
-          assert text.count(old) == 1, text.count(old)
-          path.write_text(text.replace(old, new, 1))
+          new_variant = '''        let response_type = match syn::parse_str::<syn::Type>(&call_shape.success_type) {
+                      Ok(response_type) => quote! { #response_type },
+                      Err(error) => error.to_compile_error(),
+                  };'''
+          assert text.count(old_variant) == 1, text.count(old_variant)
+          text = text.replace(old_variant, new_variant, 1)
+
+          path.write_text(text)
           PY
       - name: Remove materializer
         run: rm .github/materializers/call_shape_planner.py .github/workflows/materialize-call-shape-planner.yml
