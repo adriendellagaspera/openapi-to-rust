@@ -334,3 +334,82 @@ fn loopback_fetch_is_bounded_and_provenance_redacts_secrets() {
     oversized_server.join().unwrap();
     assert!(error.contains("response-size limit"), "{error}");
 }
+
+#[test]
+fn config_overlays_are_config_relative_deterministic_and_checked() {
+    let temp = TempDir::new().unwrap();
+    let config_dir = temp.path().join("project/config");
+    let elsewhere = temp.path().join("elsewhere");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(config_dir.join("api.yaml"), SPEC).unwrap();
+    std::fs::write(
+        config_dir.join("contract.overlay.yaml"),
+        r#"overlay: 1.1.0
+info:
+  title: CLI overlay fixture
+  version: '1'
+actions:
+  - target: $.info.title
+    update: Overlaid title
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        config_dir.join("openapi-to-rust.toml"),
+        r#"[generator]
+spec_path = "api.yaml"
+output_dir = "generated"
+module_name = "api"
+overlays = ["contract.overlay.yaml"]
+overlay_output = "materialized/openapi.json"
+
+[features]
+enable_async_client = false
+"#,
+    )
+    .unwrap();
+
+    let config = config_dir.join("openapi-to-rust.toml");
+    let config_arg = config.to_string_lossy().to_string();
+    let generated = run(
+        &elsewhere,
+        &["generate", "--config", &config_arg, "--quiet"],
+    );
+    assert_success(&generated);
+
+    let materialized = config_dir.join("materialized/openapi.json");
+    let first = std::fs::read(&materialized).unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&first).unwrap();
+    assert_eq!(parsed["info"]["title"], "Overlaid title");
+    assert!(config_dir.join("generated/types.rs").is_file());
+
+    let repeated = run(
+        &elsewhere,
+        &["generate", "--config", &config_arg, "--quiet"],
+    );
+    assert_success(&repeated);
+    let second = std::fs::read(&materialized).unwrap();
+    assert_eq!(first, second);
+
+    let current = run(
+        &elsewhere,
+        &["generate", "--config", &config_arg, "--check", "--quiet"],
+    );
+    assert_success(&current);
+
+    std::fs::write(&materialized, b"{}\n").unwrap();
+    let stale = run(
+        &elsewhere,
+        &["generate", "--config", &config_arg, "--check", "--quiet"],
+    );
+    assert!(!stale.status.success());
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("materialized OpenAPI is stale"));
+
+    let dry_run = run(
+        &elsewhere,
+        &["generate", "--config", &config_arg, "--dry-run", "--quiet"],
+    );
+    assert_success(&dry_run);
+    assert_eq!(std::fs::read(&materialized).unwrap(), b"{}\n");
+}

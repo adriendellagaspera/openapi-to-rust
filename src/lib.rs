@@ -56,6 +56,7 @@ pub mod http_config;
 #[cfg(feature = "http-error")]
 pub mod http_error;
 pub mod openapi;
+pub mod overlay;
 pub mod patterns;
 pub mod registry_generator;
 #[cfg(feature = "internal-tools")]
@@ -85,6 +86,9 @@ pub use http_config::{AuthConfig, HttpClientConfig, RetryConfig};
 #[cfg(feature = "http-error")]
 pub use http_error::{ApiError, ApiOpError, HttpError, HttpResult};
 pub use openapi::{OpenApiSpec, Schema, SchemaType};
+pub use overlay::{
+    OverlayError, apply_overlay, apply_overlay_file, apply_overlay_files, materialize_document,
+};
 pub use type_mapping::{
     ByteStrategy, DepRequirement, MappedType, TypeFeature, TypeMapper, TypeMappingConfig,
     UsedFeatures,
