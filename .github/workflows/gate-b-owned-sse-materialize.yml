@@ -1,0 +1,112 @@
+name: Gate B materialize owned SSE stream
+
+on:
+  push:
+    branches:
+      - gate-b-owned-sse-stream
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: gate-b-owned-sse-stream
+
+      - name: Apply focused SSE ABI change and fixture
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path("src/client_generator.rs")
+          text = source.read_text()
+
+          old_type = "quote! { impl futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>> }"
+          new_type = "quote! { futures_util::stream::BoxStream<'static, Result<bytes::Bytes, reqwest::Error>> }"
+          if text.count(old_type) != 1:
+              raise SystemExit(f"expected exactly one opaque SSE return type, found {text.count(old_type)}")
+          text = text.replace(old_type, new_type)
+
+          old_success = "Ok(response.bytes_stream())"
+          new_success = "Ok(Box::pin(response.bytes_stream()))"
+          if text.count(old_success) != 1:
+              raise SystemExit(f"expected exactly one direct SSE stream return, found {text.count(old_success)}")
+          text = text.replace(old_success, new_success)
+          source.write_text(text)
+
+          fixture = r'''use openapi_to_rust::{CodeGenerator, GeneratorConfig, SchemaAnalyzer};
+          use serde_json::json;
+          use std::path::PathBuf;
+
+          #[test]
+          fn sse_response_uses_owned_static_stream_abi() -> Result<(), Box<dyn std::error::Error>> {
+              let spec = json!({
+                  "openapi": "3.1.0",
+                  "info": {"title": "SSE Fixture", "version": "1.0.0"},
+                  "paths": {
+                      "/events": {
+                          "get": {
+                              "operationId": "watchEvents",
+                              "responses": {
+                                  "200": {
+                                      "description": "Event stream",
+                                      "content": {
+                                          "text/event-stream": {
+                                              "schema": {"type": "string"}
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+              });
+
+              let mut analyzer = SchemaAnalyzer::new(spec)?;
+              let analysis = analyzer.analyze()?;
+              let generator = CodeGenerator::new(GeneratorConfig {
+                  spec_path: PathBuf::from("fixture.json"),
+                  output_dir: PathBuf::from("target/sse-fixture"),
+                  module_name: "fixture".to_string(),
+                  enable_async_client: true,
+                  ..Default::default()
+              });
+              let client = generator.generate_http_client(&analysis)?;
+
+              assert!(
+                  client.contains(
+                      "futures_util::stream::BoxStream<'static, Result<bytes::Bytes, reqwest::Error>>"
+                  ),
+                  "SSE methods must expose an owned, deterministic stream ABI: {client}"
+              );
+              assert!(
+                  client.contains("Ok(Box::pin(response.bytes_stream()))"),
+                  "the live response stream must be boxed into the owned ABI: {client}"
+              );
+              assert!(
+                  !client.contains("impl futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>>"),
+                  "SSE return types must not remain opaque: {client}"
+              );
+              Ok(())
+          }
+          '''
+          Path("tests/client_sse_capabilities_test.rs").write_text(fixture)
+          PY
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Commit materialized change
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f .github/workflows/gate-b-owned-sse-materialize.yml
+          git add -A
+          git commit -m 'fix: expose owned static SSE streams'
+          git push origin HEAD:gate-b-owned-sse-stream
