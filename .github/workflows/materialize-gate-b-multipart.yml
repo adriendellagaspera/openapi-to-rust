@@ -1,0 +1,156 @@
+name: Materialize Gate B multipart capabilities
+on:
+  push:
+    branches: [gate-b-multipart-capabilities]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: gate-b-multipart-capabilities
+          fetch-depth: 0
+      - name: Implement repeated and nullable multipart support
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/client_generator.rs")
+          source = path.read_text()
+
+          replacements = [
+              (
+                  '''enum MultipartClientFieldKind {\n    RawBytes,\n    Base64,\n    Base64UrlUnpadded,\n    Text,\n}''',
+                  '''enum MultipartClientFieldKind {\n    RawBytes,\n    RepeatedText,\n    Base64,\n    Base64UrlUnpadded,\n    Text,\n}''',
+              ),
+              (
+                  '''    ) -> Option<&'a serde_json::Value> {\n        let Some(reference) = schema.get("$ref").and_then(serde_json::Value::as_str) else {\n            return Some(schema);\n        };''',
+                  '''    ) -> Option<&'a serde_json::Value> {\n        if let Some(variants) = schema.get("anyOf").and_then(serde_json::Value::as_array) {\n            let non_null: Vec<_> = variants\n                .iter()\n                .filter(|variant| {\n                    variant.get("type").and_then(serde_json::Value::as_str) != Some("null")\n                })\n                .collect();\n            if non_null.len() == 1 {\n                return Self::resolve_multipart_wire_schema(non_null[0], analysis, visited);\n            }\n        }\n        let Some(reference) = schema.get("$ref").and_then(serde_json::Value::as_str) else {\n            return Some(schema);\n        };''',
+              ),
+              (
+                  '''            crate::analysis::SchemaType::StringEnum { .. }\n            | crate::analysis::SchemaType::ExtensibleEnum { .. } => {\n                Some(MultipartClientFieldKind::Text)\n            }''',
+                  '''            crate::analysis::SchemaType::Array { item_type } => {\n                match Self::multipart_client_field_kind(item_type, analysis, visited) {\n                    Some(MultipartClientFieldKind::Text) => {\n                        Some(MultipartClientFieldKind::RepeatedText)\n                    }\n                    _ => None,\n                }\n            }\n            crate::analysis::SchemaType::StringEnum { .. }\n            | crate::analysis::SchemaType::ExtensibleEnum { .. } => {\n                Some(MultipartClientFieldKind::Text)\n            }''',
+              ),
+              (
+                  '''                MultipartClientFieldKind::Base64 => quote! {\n                    use base64::Engine as _;\n                    form = form.text(\n                        #wire_name,\n                        base64::engine::general_purpose::STANDARD.encode(value),\n                    );\n                },''',
+                  '''                MultipartClientFieldKind::RepeatedText => quote! {\n                    for item in value {\n                        form = form.text(#wire_name, item.to_string());\n                    }\n                },\n                MultipartClientFieldKind::Base64 => quote! {\n                    use base64::Engine as _;\n                    form = form.text(\n                        #wire_name,\n                        base64::engine::general_purpose::STANDARD.encode(value),\n                    );\n                },''',
+              ),
+          ]
+          for old, new in replacements:
+              if source.count(old) != 1:
+                  raise SystemExit(f"expected one replacement seam, found {source.count(old)}: {old[:80]!r}")
+              source = source.replace(old, new, 1)
+          path.write_text(source)
+
+          Path("tests/client_multipart_capabilities_test.rs").write_text(r'''use openapi_to_rust::{CodeGenerator, GeneratorConfig, SchemaAnalyzer};
+          use serde_json::json;
+          use std::path::PathBuf;
+
+          #[test]
+          fn repeated_scalar_fields_and_nullable_binary_parts_generate_typed_multipart() {
+              let spec = json!({
+                  "openapi": "3.1.0",
+                  "info": {"title": "Multipart Fixture", "version": "1.0.0"},
+                  "paths": {
+                      "/uploads": {
+                          "post": {
+                              "operationId": "createUpload",
+                              "requestBody": {
+                                  "required": true,
+                                  "content": {
+                                      "multipart/form-data": {
+                                          "schema": {"$ref": "#/components/schemas/UploadRequest"}
+                                      }
+                                  }
+                              },
+                              "responses": {"204": {"description": "Uploaded"}}
+                          }
+                      }
+                  },
+                  "components": {
+                      "schemas": {
+                          "Mode": {
+                              "type": "string",
+                              "enum": ["fast", "safe"]
+                          },
+                          "File": {
+                              "type": "string",
+                              "format": "binary"
+                          },
+                          "UploadRequest": {
+                              "type": "object",
+                              "required": ["labels"],
+                              "properties": {
+                                  "labels": {
+                                      "type": "array",
+                                      "items": {"type": "string"}
+                                  },
+                                  "modes": {
+                                      "type": "array",
+                                      "items": {"$ref": "#/components/schemas/Mode"}
+                                  },
+                                  "file": {
+                                      "anyOf": [
+                                          {"$ref": "#/components/schemas/File"},
+                                          {"type": "null"}
+                                      ]
+                                  }
+                              }
+                          }
+                      }
+                  }
+              });
+
+              let mut analyzer = SchemaAnalyzer::new(spec).expect("create analyzer");
+              let analysis = analyzer.analyze().expect("analyze multipart fixture");
+              let generator = CodeGenerator::new(GeneratorConfig {
+                  spec_path: PathBuf::from("fixture.json"),
+                  output_dir: PathBuf::from("target/multipart-fixture"),
+                  module_name: "fixture".to_string(),
+                  enable_async_client: true,
+                  ..Default::default()
+              });
+              let client = generator
+                  .generate_http_client(&analysis)
+                  .expect("generate multipart client");
+
+              assert!(!client.contains("must be binary or a scalar text field"), "{client}");
+              assert!(
+                  client.contains("form = form.text(\"labels\", item.to_string());"),
+                  "required string arrays must use repeated multipart fields: {client}"
+              );
+              assert!(
+                  client.contains("form = form.text(\"modes\", item.to_string());"),
+                  "enum arrays must use repeated multipart fields: {client}"
+              );
+              assert!(
+                  client.contains("reqwest::multipart::Part::bytes(value.to_vec())"),
+                  "nullable referenced binary schemas must remain binary multipart parts: {client}"
+              );
+          }
+          ''')
+          PY
+          cargo fmt --all
+      - name: Run focused multipart quality gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --test client_multipart_capabilities_test
+          cargo clippy --locked --test client_multipart_capabilities_test -- -D warnings
+          cargo fmt --all --check
+      - name: Commit generic capability increment
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/client_generator.rs tests/client_multipart_capabilities_test.rs
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: support repeated and nullable multipart fields"
+          git push origin HEAD:gate-b-multipart-capabilities
