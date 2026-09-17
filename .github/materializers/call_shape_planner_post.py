@@ -17,13 +17,12 @@ def replace_once(old: str, new: str) -> None:
 # including collision-safe names and selected return types.
 replace_once(
     "        let (operation_builders, builder_entries) =\n            self.generate_operation_builders(analysis, operations);",
-    "        let (operation_builders, builder_entries) =\n            self.generate_operation_builders(&method_plans);",
+    "        let (operation_builders, builder_entries) =\n            self.generate_operation_builders(analysis, &method_plans);",
 )
 
 start = text.index("    fn generate_operation_builders(")
 end = text.index("    #[allow(clippy::too_many_arguments)]", start)
 block = text[start:end]
-block = block.replace("        analysis: &SchemaAnalysis,\n", "", 1)
 block = block.replace(
     "        operations: &[&OperationInfo],",
     "        plans: &[ClientOperationMethodPlan<'_>],",
@@ -73,14 +72,14 @@ block = block.replace(
     1,
 )
 block = block.replace(
-    "                operation,\n                &allocated_params,",
+    "                analysis,\n                operation,\n                &allocated_params,",
     "                operation,\n                base_shape,\n                &allocated_params,",
     1,
 )
 text = text[:start] + block + text[end:]
 
 replace_once(
-    "        operation: &OperationInfo,\n        allocated_params: &[AllocatedOperationParam<'_>],",
+    "        analysis: &SchemaAnalysis,\n        operation: &OperationInfo,\n        allocated_params: &[AllocatedOperationParam<'_>],",
     "        operation: &OperationInfo,\n        base_shape: &ClientCallShapePlan,\n        allocated_params: &[AllocatedOperationParam<'_>],",
 )
 
