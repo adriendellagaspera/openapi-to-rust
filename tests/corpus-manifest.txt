@@ -159,7 +159,7 @@ openai/client.rs                                        1101745    29891 357a7f5
 openai/mod.rs                                               438       17 59c0207149335235
 openai/types.rs                                         6310615   142383 a39f47ec0b9c4cd0
 opencode/REQUIRED_DEPS.toml                                 576       14 9228e95d38f5078e
-opencode/client.rs                                       943362    25095 d0a641e0a3bb0d27
+opencode/client.rs                                       943560    25095 deda18fc605838bb
 opencode/mod.rs                                             442       17 98c109eb94b95dbf
 opencode/types.rs                                       6695017   143213 ef443d0415e39591
 pagerduty/REQUIRED_DEPS.toml                                672       16 9e666f39c7301c02
@@ -195,7 +195,7 @@ spotify/client.rs                                        563501    14797 7303567
 spotify/mod.rs                                              440       17 954184fb7fd84586
 spotify/types.rs                                         261914     6374 ec3db89e1975c7b0
 storyden/REQUIRED_DEPS.toml                                 698       17 569479aa8197c912
-storyden/client.rs                                       967706    25558 410cd3614dbf2385
+storyden/client.rs                                       968026    25564 ef4e0ac1631a71aa
 storyden/mod.rs                                             442       17 ff7a510276d50e59
 storyden/types.rs                                        884799    20120 38b50906e06a668d
 stripe/REQUIRED_DEPS.toml                                   601       15 de8d722a8a5cb828
@@ -235,4 +235,4 @@ writer/client.rs                                         141382     3800 79eabc8
 writer/mod.rs                                               438       17 0435bf1552e493d1
 writer/types.rs                                          182479     4509 36b85cce121b9439
 #
-# specs: 56   files: 224   bytes: 314284452
+# specs: 56   files: 224   bytes: 314284970
