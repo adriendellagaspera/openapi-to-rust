@@ -24,46 +24,11 @@ jobs:
           path = Path('src/overlay.rs')
           text = path.read_text()
           text = text.replace('use std::collections::BTreeSet;\n', '')
-          old = '''    let mut seen = BTreeSet::new();
-    for (index, action) in actions.iter().enumerate() {
-        let canonical = serde_json::to_string(action).map_err(|error| {
-            invalid(
-                source,
-                format!("action {} cannot be normalized: {error}", index + 1),
-            )
-        })?;
-        if !seen.insert(canonical) {
-            return Err(invalid(
-                source,
-                format!("action {} duplicates an earlier action", index + 1),
-            ));
-        }
-        apply_action(document, action, source, index + 1)?;
-    }
-'''
-          new = '''    for (index, action) in actions.iter().enumerate() {
-        apply_action(document, action, source, index + 1)?;
-    }
-'''
-          if text.count(old) != 1:
-              raise SystemExit(f'expected duplicate-action guard exactly once, got {text.count(old)}')
-          text = text.replace(old, new, 1)
-          anchor = '''    #[test]
-    fn update_merges_objects_concatenates_arrays_and_replaces_primitives() {
-'''
-          test = '''    #[test]
-    fn repeated_actions_are_applied_sequentially() {
-        let mut document = json!({"items": []});
-        let action = json!({"target": "$.items", "update": "x"});
-        apply(
-            &mut document,
-            overlay(json!([action.clone(), action])),
-        )
-        .expect("repeated actions are valid");
-        assert_eq!(document["items"], json!(["x", "x"]));
-    }
-
-'''
+          start = text.index('    let mut seen = BTreeSet::new();\n')
+          end = text.index('    Ok(())\n', start)
+          text = text[:start] + '    for (index, action) in actions.iter().enumerate() {\n        apply_action(document, action, source, index + 1)?;\n    }\n' + text[end:]
+          anchor = '    #[test]\n    fn update_merges_objects_concatenates_arrays_and_replaces_primitives() {\n'
+          test = '    #[test]\n    fn repeated_actions_are_applied_sequentially() {\n        let mut document = json!({"items": []});\n        let action = json!({"target": "$.items", "update": "x"});\n        apply(&mut document, overlay(json!([action.clone(), action])))\n            .expect("repeated actions are valid");\n        assert_eq!(document["items"], json!(["x", "x"]));\n    }\n\n'
           if text.count(anchor) != 1:
               raise SystemExit(f'expected test anchor exactly once, got {text.count(anchor)}')
           text = text.replace(anchor, test + anchor, 1)
