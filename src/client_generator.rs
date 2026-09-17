@@ -172,6 +172,7 @@ struct BodyFieldPlan {
 #[derive(Clone, Copy)]
 enum MultipartClientFieldKind {
     RawBytes,
+    RepeatedText,
     Base64,
     Base64UrlUnpadded,
     Text,
@@ -2545,6 +2546,17 @@ impl CodeGenerator {
         analysis: &'a SchemaAnalysis,
         visited: &mut std::collections::HashSet<String>,
     ) -> Option<&'a serde_json::Value> {
+        if let Some(variants) = schema.get("anyOf").and_then(serde_json::Value::as_array) {
+            let non_null: Vec<_> = variants
+                .iter()
+                .filter(|variant| {
+                    variant.get("type").and_then(serde_json::Value::as_str) != Some("null")
+                })
+                .collect();
+            if non_null.len() == 1 {
+                return Self::resolve_multipart_wire_schema(non_null[0], analysis, visited);
+            }
+        }
         let Some(reference) = schema.get("$ref").and_then(serde_json::Value::as_str) else {
             return Some(schema);
         };
@@ -2582,6 +2594,14 @@ impl CodeGenerator {
                     Some(MultipartClientFieldKind::Base64)
                 } else {
                     Some(MultipartClientFieldKind::Text)
+                }
+            }
+            crate::analysis::SchemaType::Array { item_type } => {
+                match Self::multipart_client_field_kind(item_type, analysis, visited) {
+                    Some(MultipartClientFieldKind::Text) => {
+                        Some(MultipartClientFieldKind::RepeatedText)
+                    }
+                    _ => None,
                 }
             }
             crate::analysis::SchemaType::StringEnum { .. }
@@ -2707,6 +2727,11 @@ impl CodeGenerator {
                         #wire_name,
                         reqwest::multipart::Part::bytes(value.to_vec()),
                     );
+                },
+                MultipartClientFieldKind::RepeatedText => quote! {
+                    for item in value {
+                        form = form.text(#wire_name, item.to_string());
+                    }
                 },
                 MultipartClientFieldKind::Base64 => quote! {
                     use base64::Engine as _;
