@@ -1,232 +1,230 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
 
-permissions:
-  contents: write
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  materialize:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
+          submodules: true
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy,rustfmt
-      - name: Materialize per-call multipart filenames
+          # `generated_wasm_client_test` compiles a generated client for
+          # wasm32-unknown-unknown; without the target it skips, which would
+          # let issue #74 regress silently.
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --profile ci --all-features
+      # nextest runs each test in its own process and cannot run doctests, so
+      # the crate's doctests still go through the built-in harness.
+      - run: cargo test --doc --all-features
+      - name: Verify checked-in conformance reports
         run: |
-          python - <<'PY'
-          from pathlib import Path
+          CONFORMANCE_REPORT=1 cargo nextest run --test conformance --test conformance_json_schema
+          git diff --exit-code -- tests/conformance/coverage-report.md tests/conformance/json-schema-2020-12-report.md
 
-          path = Path('src/client_generator.rs')
-          text = path.read_text()
+  openai-sdk-compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            examples/server-openai-responses -> target
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/python/openai_sdk_compat/requirements.txt
+      - name: Install pinned official OpenAI Python SDK
+        run: python -m pip install --requirement tests/python/openai_sdk_compat/requirements.txt
+      - name: Test official SDK against generated Axum server
+        env:
+          OPENAI_COMPAT_PYTHON: python
+        run: >-
+          cargo test --test openai_sdk_compat_test
+          official_openai_python_sdk_matches_generated_axum_server --
+          --ignored --exact --nocapture
 
-          start = text.index('    /// Generate a single operation method\n    fn generate_single_operation_method(')
-          end = text.index('    /// T3: emit the auth-token application', start)
-          replacement = "\n".join([
-              "    /// Generate a single operation method.",
-              "    ///",
-              "    /// Multipart operations also get an additive per-call filename variant so",
-              "    /// callers can assign independent filenames without mutating client state.",
-              "    fn generate_single_operation_method(",
-              "        &self,",
-              "        analysis: &SchemaAnalysis,",
-              "        op: &OperationInfo,",
-              "    ) -> TokenStream {",
-              "        let method_name = self.get_method_name(op);",
-              "        let base = self.generate_single_operation_method_variant(",
-              "            analysis,",
-              "            op,",
-              "            method_name.clone(),",
-              "            false,",
-              "        );",
-              "        if matches!(",
-              "            op.request_body.as_ref(),",
-              "            Some(crate::analysis::RequestBodyContent::Multipart { .. })",
-              "        ) {",
-              "            let filename_method = format_ident!(\"{}_with_multipart_filenames\", method_name);",
-              "            let with_filenames = self.generate_single_operation_method_variant(",
-              "                analysis,",
-              "                op,",
-              "                filename_method,",
-              "                true,",
-              "            );",
-              "            quote! {",
-              "                #base",
-              "                #with_filenames",
-              "            }",
-              "        } else {",
-              "            base",
-              "        }",
-              "    }",
-              "",
-              "    fn generate_single_operation_method_variant(",
-              "        &self,",
-              "        analysis: &SchemaAnalysis,",
-              "        op: &OperationInfo,",
-              "        method_name: syn::Ident,",
-              "        with_multipart_filenames: bool,",
-              "    ) -> TokenStream {",
-              "        let http_method_call = self.http_method_call(op);",
-              "        let path = &op.path;",
-              "        let request_param = self.generate_request_param(op);",
-              "        let request_params = if with_multipart_filenames {",
-              "            if request_param.is_empty() {",
-              "                quote! { multipart_filenames: &[(&str, &str)] }",
-              "            } else {",
-              "                quote! { #request_param, multipart_filenames: &[(&str, &str)] }",
-              "            }",
-              "        } else {",
-              "            request_param",
-              "        };",
-              "        let request_body =",
-              "            self.generate_request_body(op, analysis, with_multipart_filenames);",
-              "        let query_params = self.generate_query_params(op);",
-              "        let header_params = self.generate_header_params(op);",
-              "        let cookie_params = self.generate_cookie_params(op);",
-              "        let auth_application = self.generate_auth_application();",
-              "        let success = self.get_success_response(analysis, op);",
-              "        let response_type = self.get_response_type(analysis, op);",
-              "        let op_error_type = self.op_error_type_token(op);",
-              "        let accept = success.accept;",
-              "        let error_handling = self.generate_error_handling(op, success);",
-              "        let (custom_headers, accept_header) = if let Some(media_type) = accept {",
-              "            (",
-              "                quote! {",
-              "                    for (name, value) in &self.custom_headers {",
-              "                        if !name.eq_ignore_ascii_case(\"accept\") {",
-              "                            req = req.header(name, value);",
-              "                        }",
-              "                    }",
-              "                },",
-              "                quote! {",
-              "                    req = req.header(reqwest::header::ACCEPT, #media_type);",
-              "                },",
-              "            )",
-              "        } else {",
-              "            (",
-              "                quote! {",
-              "                    for (name, value) in &self.custom_headers {",
-              "                        req = req.header(name, value);",
-              "                    }",
-              "                },",
-              "                TokenStream::new(),",
-              "            )",
-              "        };",
-              "        let url_construction = self.generate_url_construction(path, op);",
-              "        let doc_comment = self.generate_operation_doc_comment(op);",
-              "        let filename_doc = with_multipart_filenames.then(|| {",
-              "            quote! {",
-              "                /// Override multipart filenames for binary fields by OpenAPI wire name.",
-              "                /// Unspecified binary fields use their wire name as a deterministic fallback.",
-              "            }",
-              "        });",
-              "",
-              "        quote! {",
-              "            #doc_comment",
-              "            #filename_doc",
-              "            pub async fn #method_name(",
-              "                &self,",
-              "                #request_params",
-              "            ) -> Result<#response_type, ApiOpError<#op_error_type>> {",
-              "                #url_construction",
-              "",
-              "                let mut req = #http_method_call;",
-              "                #request_body",
-              "",
-              "                #query_params",
-              "                #header_params",
-              "                #cookie_params",
-              "                #auth_application",
-              "                #custom_headers",
-              "                #accept_header",
-              "",
-              "                let response = req.send().await?;",
-              "                #error_handling",
-              "            }",
-              "        }",
-              "    }",
-              "",
-          ])
-          text = text[:start] + replacement + text[end:]
+  anthropic-sdk-compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            examples/server-anthropic-messages -> target
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/python/anthropic_sdk_compat/requirements.txt
+      - name: Install pinned official Anthropic Python SDK
+        run: python -m pip install --requirement tests/python/anthropic_sdk_compat/requirements.txt
+      - name: Test official SDK against generated Axum server
+        env:
+          ANTHROPIC_COMPAT_PYTHON: python
+        run: >-
+          cargo test --test anthropic_sdk_compat_test
+          official_anthropic_python_sdk_matches_generated_axum_server --
+          --ignored --exact --nocapture
 
-          fn_start = text.index('    fn generate_typed_multipart_form(')
-          sig_end = text.index('    ) -> TokenStream {', fn_start)
-          sig = text[fn_start:sig_end]
-          marker = '        analysis: &SchemaAnalysis,\n'
-          if marker not in sig:
-              raise SystemExit('multipart form analysis parameter changed')
-          sig = sig.replace(marker, marker + '        with_multipart_filenames: bool,\n', 1)
-          text = text[:fn_start] + sig + text[sig_end:]
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-features -- -D warnings
 
-          raw_start = text.index('                MultipartClientFieldKind::RawBytes => quote! {')
-          raw_end = text.index('                MultipartClientFieldKind::RepeatedText =>', raw_start)
-          raw = "\n".join([
-              "                MultipartClientFieldKind::RawBytes => {",
-              "                    let filename = if with_multipart_filenames {",
-              "                        quote! {",
-              "                            multipart_filenames",
-              "                                .iter()",
-              "                                .find(|(field, _)| *field == #wire_name)",
-              "                                .map(|(_, filename)| (*filename).to_string())",
-              "                                .unwrap_or_else(|| #wire_name.to_string())",
-              "                        }",
-              "                    } else {",
-              "                        quote! { #wire_name.to_string() }",
-              "                    };",
-              "                    quote! {",
-              "                        form = form.part(",
-              "                            #wire_name,",
-              "                            reqwest::multipart::Part::bytes(value.to_vec()).file_name(#filename),",
-              "                        );",
-              "                    }",
-              "                },",
-          ]) + "\n"
-          text = text[:raw_start] + raw + text[raw_end:]
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
 
-          old_body = '    fn generate_request_body(&self, op: &OperationInfo, analysis: &SchemaAnalysis) -> TokenStream {'
-          new_body = "\n".join([
-              "    fn generate_request_body(",
-              "        &self,",
-              "        op: &OperationInfo,",
-              "        analysis: &SchemaAnalysis,",
-              "        with_multipart_filenames: bool,",
-              "    ) -> TokenStream {",
-          ])
-          if old_body not in text:
-              raise SystemExit('request body signature changed')
-          text = text.replace(old_body, new_body, 1)
+  doc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
 
-          old_call = '                self.generate_typed_multipart_form(schema_name, validation_schema, analysis),'
-          new_call = "\n".join([
-              "                self.generate_typed_multipart_form(",
-              "                    schema_name,",
-              "                    validation_schema,",
-              "                    analysis,",
-              "                    with_multipart_filenames,",
-              "                ),",
-          ])
-          if old_call not in text:
-              raise SystemExit('typed multipart call changed')
-          text = text.replace(old_call, new_call, 1)
-          path.write_text(text)
-          PY
-      - name: Validate focused change
+  install-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/install-smoke.sh
+        env:
+          # Keep cargo-install artifacts inside the target tree restored by
+          # rust-cache; the script still isolates and removes its package root.
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target/install-smoke
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets --all-features
+
+  # Fast tier: every supported corpus document must generate, while the two
+  # production-target specs must also compile from their exact dependency
+  # fragments. The full compile tier runs separately on a schedule/manual run.
+  # Hash every file the generator emits for the pinned corpus and compare it
+  # with tests/corpus-manifest.txt. A change here means real-world output moved.
+  # Pull requests get this gate from corpus-diff instead, which generates the
+  # same corpus anyway and can also say what moved.
+  corpus-manifest:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/corpus-manifest.sh --check
+
+  # Show the reviewer what a generator change does to real-world output, rather
+  # than only that something changed: regenerate the corpus at the base of the
+  # pull request and at its head, and diff the two. The manifest gate then runs
+  # off the head corpus this already produced.
+  corpus-diff:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gen-diff.sh builds the base ref in a worktree, so its history has
+          # to be present.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Diff generated corpus against the pull request base
+        # `shell: bash` for pipefail: without it the pipe would report tee's
+        # status and hide a failed run.
+        shell: bash
         run: |
-          cargo fmt --all
-          cargo test --test client_multipart_capabilities_test
-          cargo clippy --test client_multipart_capabilities_test -- -D warnings
-      - name: Commit only the product change
+          scripts/gen-diff.sh "${{ github.event.pull_request.base.sha }}" \
+            | tee "$RUNNER_TEMP/gen-diff-summary.txt"
+      - name: Publish summary
+        if: always()
         run: |
-          git fetch origin main
-          git checkout origin/main -- .github/workflows/ci.yml
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add .github/workflows/ci.yml src/client_generator.rs tests/client_multipart_capabilities_test.rs
-          git commit -m 'fix: support per-call multipart filenames'
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+          {
+            echo '## Generated corpus diff'
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/gen-diff-summary.txt" 2>/dev/null \
+              || echo '(gen-diff did not complete)'
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: corpus-diff
+          path: tmp/gen-diff/report/
+          if-no-files-found: ignore
+      - name: Verify tests/corpus-manifest.txt matches the generated corpus
+        run: scripts/corpus-manifest.sh --check --from tmp/gen-diff/head
+
+  spec-compile:
+    if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      # Share scratch-crate dependencies across runs through rust-cache's
+      # root-workspace target directory.
+      SPEC_COMPILE_TARGET_DIR: ${{ github.workspace }}/target/spec-compile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: SPEC_COMPILE_PARSE_ONLY=1 scripts/spec-compile.sh
+      - run: scripts/spec-compile.sh anthropic openai
+
+  full-spec-compile:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      SPEC_COMPILE_TARGET_DIR: ${{ github.workspace }}/target/spec-compile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/spec-compile.sh

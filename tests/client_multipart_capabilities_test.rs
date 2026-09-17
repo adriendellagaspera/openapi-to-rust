@@ -91,8 +91,7 @@ fn repeated_scalar_fields_and_nullable_binary_parts_generate_typed_multipart()
         "filename overrides must be request-local rather than client state: {client}"
     );
     assert!(
-        client.contains("*field == \"file\"")
-            && client.contains("*field == \"thumbnail\""),
+        client.contains("*field == \"file\"") && client.contains("*field == \"thumbnail\""),
         "each binary field must resolve its own filename override: {client}"
     );
     assert!(
