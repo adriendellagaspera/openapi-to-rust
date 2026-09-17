@@ -7,7 +7,6 @@
 use jsonpath_rust::JsonPath;
 use jsonpath_rust::query::queryable::Queryable;
 use serde_json::{Map, Value};
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -120,20 +119,7 @@ pub fn apply_overlay(
         return Err(invalid(source, "root.actions must be a non-empty array"));
     }
 
-    let mut seen = BTreeSet::new();
     for (index, action) in actions.iter().enumerate() {
-        let canonical = serde_json::to_string(action).map_err(|error| {
-            invalid(
-                source,
-                format!("action {} cannot be normalized: {error}", index + 1),
-            )
-        })?;
-        if !seen.insert(canonical) {
-            return Err(invalid(
-                source,
-                format!("action {} duplicates an earlier action", index + 1),
-            ));
-        }
         apply_action(document, action, source, index + 1)?;
     }
     Ok(())
@@ -488,6 +474,15 @@ mod tests {
         )
         .expect("valid overlay");
         assert_eq!(document["info"]["description"], "changed");
+    }
+
+    #[test]
+    fn repeated_actions_are_applied_sequentially() {
+        let mut document = json!({"items": []});
+        let action = json!({"target": "$.items", "update": "x"});
+        apply(&mut document, overlay(json!([action.clone(), action])))
+            .expect("repeated actions are valid");
+        assert_eq!(document["items"], json!(["x", "x"]));
     }
 
     #[test]
