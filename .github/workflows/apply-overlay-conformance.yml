@@ -1,0 +1,33 @@
+name: Apply Overlay conformance cleanup
+
+on:
+  push:
+    branches:
+      - feat/openapi-overlay-1-1
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/openapi-overlay-1-1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Patch source
+        run: |
+          python -c 'from pathlib import Path; p=Path("src/overlay.rs"); t=p.read_text(); t=t.replace("use std::collections::BTreeSet;\n", ""); s=t.index("    let mut seen = BTreeSet::new();\n"); e=t.index("    Ok(())\n", s); t=t[:s]+"    for (index, action) in actions.iter().enumerate() {\n        apply_action(document, action, source, index + 1)?;\n    }\n"+t[e:]; a="    #[test]\n    fn update_merges_objects_concatenates_arrays_and_replaces_primitives() {\n"; x="    #[test]\n    fn repeated_actions_are_applied_sequentially() {\n        let mut document = json!({\"items\": []});\n        let action = json!({\"target\": \"$.items\", \"update\": \"x\"});\n        apply(&mut document, overlay(json!([action.clone(), action])))\n            .expect(\"repeated actions are valid\");\n        assert_eq!(document[\"items\"], json!([\"x\", \"x\"]));\n    }\n\n"; assert t.count(a)==1; p.write_text(t.replace(a, x+a, 1))'
+          cargo fmt --all
+          rm -f .github/workflows/fix-overlay-conformance.yml
+          rm .github/workflows/apply-overlay-conformance.yml
+      - name: Commit source cleanup
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix: apply repeated Overlay actions sequentially"
+          git push
