@@ -170,7 +170,7 @@ jobs:
                   "wasm SSE streams must use the owned non-Send ABI supported by reqwest: {client}"
               );
               assert!(
-                  client.contains("Result<HttpResponseByteStream, HttpError>"),
+                  client.contains("Result<HttpResponseByteStream, ApiOpError<"),
                   "SSE methods must expose the stable stream alias: {client}"
               );
               assert!(
