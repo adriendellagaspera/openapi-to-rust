@@ -220,6 +220,38 @@ struct ClientOperationMethodPlan<'a> {
 }
 
 impl CodeGenerator {
+    pub(crate) fn generate_http_response_stream_type_alias(
+        &self,
+        analysis: &SchemaAnalysis,
+        operations: &[&OperationInfo],
+    ) -> TokenStream {
+        let has_event_stream = operations.iter().any(|operation| {
+            matches!(
+                self.get_success_response(analysis, operation).body,
+                ClientSuccessBody::EventStream
+            )
+        });
+        if !has_event_stream {
+            return quote! {};
+        }
+
+        quote! {
+            /// Owned byte stream returned by streaming HTTP responses.
+            #[cfg(not(target_arch = "wasm32"))]
+            pub type HttpResponseByteStream = futures_util::stream::BoxStream<
+                'static,
+                Result<bytes::Bytes, reqwest::Error>,
+            >;
+
+            /// Owned byte stream returned by streaming HTTP responses.
+            #[cfg(target_arch = "wasm32")]
+            pub type HttpResponseByteStream = futures_util::stream::LocalBoxStream<
+                'static,
+                Result<bytes::Bytes, reqwest::Error>,
+            >;
+        }
+    }
+
     /// Generate the HTTP client struct with middleware support
     pub fn generate_http_client_struct(&self) -> TokenStream {
         let has_retry = self.config().retry_config.is_some();
@@ -3181,9 +3213,7 @@ impl CodeGenerator {
             }
             ClientSuccessBody::Text => quote! { String },
             ClientSuccessBody::Binary => quote! { bytes::Bytes },
-            ClientSuccessBody::EventStream => {
-                quote! { futures_util::stream::BoxStream<'static, Result<bytes::Bytes, reqwest::Error>> }
-            }
+            ClientSuccessBody::EventStream => quote! { HttpResponseByteStream },
             ClientSuccessBody::Empty => quote! { () },
         }
     }
