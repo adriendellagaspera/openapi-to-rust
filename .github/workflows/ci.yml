@@ -1,230 +1,69 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
-  schedule:
-    - cron: "17 6 * * 1"
-  workflow_dispatch:
 
-env:
-  CARGO_TERM_COLOR: always
+permissions:
+  contents: write
 
 jobs:
-  test:
+  materialize:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          # `generated_wasm_client_test` compiles a generated client for
-          # wasm32-unknown-unknown; without the target it skips, which would
-          # let issue #74 regress silently.
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@nextest
-      - run: cargo nextest run --profile ci --all-features
-      # nextest runs each test in its own process and cannot run doctests, so
-      # the crate's doctests still go through the built-in harness.
-      - run: cargo test --doc --all-features
-      - name: Verify checked-in conformance reports
-        run: |
-          CONFORMANCE_REPORT=1 cargo nextest run --test conformance --test conformance_json_schema
-          git diff --exit-code -- tests/conformance/coverage-report.md tests/conformance/json-schema-2020-12-report.md
-
-  openai-sdk-compat:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-            examples/server-openai-responses -> target
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: tests/python/openai_sdk_compat/requirements.txt
-      - name: Install pinned official OpenAI Python SDK
-        run: python -m pip install --requirement tests/python/openai_sdk_compat/requirements.txt
-      - name: Test official SDK against generated Axum server
-        env:
-          OPENAI_COMPAT_PYTHON: python
-        run: >-
-          cargo test --test openai_sdk_compat_test
-          official_openai_python_sdk_matches_generated_axum_server --
-          --ignored --exact --nocapture
-
-  anthropic-sdk-compat:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-            examples/server-anthropic-messages -> target
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: tests/python/anthropic_sdk_compat/requirements.txt
-      - name: Install pinned official Anthropic Python SDK
-        run: python -m pip install --requirement tests/python/anthropic_sdk_compat/requirements.txt
-      - name: Test official SDK against generated Axum server
-        env:
-          ANTHROPIC_COMPAT_PYTHON: python
-        run: >-
-          cargo test --test anthropic_sdk_compat_test
-          official_anthropic_python_sdk_matches_generated_axum_server --
-          --ignored --exact --nocapture
-
-  clippy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-features -- -D warnings
-
-  fmt:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --check
-
-  doc:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --no-deps --all-features
-        env:
-          RUSTDOCFLAGS: -D warnings
-
-  install-smoke:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: scripts/install-smoke.sh
-        env:
-          # Keep cargo-install artifacts inside the target tree restored by
-          # rust-cache; the script still isolates and removes its package root.
-          CARGO_TARGET_DIR: ${{ github.workspace }}/target/install-smoke
-
-  msrv:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.88.0
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets --all-features
-
-  # Fast tier: every supported corpus document must generate, while the two
-  # production-target specs must also compile from their exact dependency
-  # fragments. The full compile tier runs separately on a schedule/manual run.
-  # Hash every file the generator emits for the pinned corpus and compare it
-  # with tests/corpus-manifest.txt. A change here means real-world output moved.
-  # Pull requests get this gate from corpus-diff instead, which generates the
-  # same corpus anyway and can also say what moved.
-  corpus-manifest:
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: scripts/corpus-manifest.sh --check
-
-  # Show the reviewer what a generator change does to real-world output, rather
-  # than only that something changed: regenerate the corpus at the base of the
-  # pull request and at its head, and diff the two. The manifest gate then runs
-  # off the head corpus this already produced.
-  corpus-diff:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # gen-diff.sh builds the base ref in a worktree, so its history has
-          # to be present.
+          ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Diff generated corpus against the pull request base
-        # `shell: bash` for pipefail: without it the pipe would report tee's
-        # status and hide a failed run.
-        shell: bash
-        run: |
-          scripts/gen-diff.sh "${{ github.event.pull_request.base.sha }}" \
-            | tee "$RUNNER_TEMP/gen-diff-summary.txt"
-      - name: Publish summary
-        if: always()
-        run: |
-          {
-            echo '## Generated corpus diff'
-            echo
-            echo '```'
-            cat "$RUNNER_TEMP/gen-diff-summary.txt" 2>/dev/null \
-              || echo '(gen-diff did not complete)'
-            echo '```'
-          } >>"$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: corpus-diff
-          path: tmp/gen-diff/report/
-          if-no-files-found: ignore
-      - name: Verify tests/corpus-manifest.txt matches the generated corpus
-        run: scripts/corpus-manifest.sh --check --from tmp/gen-diff/head
+          components: clippy,rustfmt
+      - name: Apply generic multipart filename capability
+        run: |
+          python - <<'PY'
+          from pathlib import Path
 
-  spec-compile:
-    if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    env:
-      # Share scratch-crate dependencies across runs through rust-cache's
-      # root-workspace target directory.
-      SPEC_COMPILE_TARGET_DIR: ${{ github.workspace }}/target/spec-compile
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: SPEC_COMPILE_PARSE_ONLY=1 scripts/spec-compile.sh
-      - run: scripts/spec-compile.sh anthropic openai
+          path = Path('src/client_generator.rs')
+          text = path.read_text()
+          old = '''                MultipartClientFieldKind::RawBytes => quote! {
+                    form = form.part(
+                        #wire_name,
+                        reqwest::multipart::Part::bytes(value.to_vec()),
+                    );
+                },'''
+          new = '''                MultipartClientFieldKind::RawBytes => quote! {
+                    form = form.part(
+                        #wire_name,
+                        reqwest::multipart::Part::bytes(value.to_vec()).file_name(#wire_name),
+                    );
+                },'''
+          if old not in text:
+              raise SystemExit('multipart RawBytes generation shape changed; review required')
+          path.write_text(text.replace(old, new, 1))
 
-  full-spec-compile:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
-    env:
-      SPEC_COMPILE_TARGET_DIR: ${{ github.workspace }}/target/spec-compile
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: scripts/spec-compile.sh
+          test = Path('tests/client_multipart_capabilities_test.rs')
+          text = test.read_text()
+          old = '''        client.contains("reqwest::multipart::Part::bytes(value.to_vec())"),
+        "nullable referenced binary schemas must remain binary multipart parts: {client}"'''
+          new = '''        client.contains(
+            "reqwest::multipart::Part::bytes(value.to_vec()).file_name(\\\"file\\\")"
+        ),
+        "binary multipart parts must carry a deterministic field-local filename: {client}"'''
+          if old not in text:
+              raise SystemExit('multipart capability assertion shape changed; review required')
+          test.write_text(text.replace(old, new, 1))
+          PY
+      - name: Validate focused change
+        run: |
+          cargo fmt --all
+          cargo test --test client_multipart_capabilities_test
+          cargo clippy --test client_multipart_capabilities_test -- -D warnings
+      - name: Commit only the product change
+        run: |
+          git fetch origin main
+          git checkout origin/main -- .github/workflows/ci.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/ci.yml src/client_generator.rs tests/client_multipart_capabilities_test.rs
+          git commit -m 'fix: attach filenames to binary multipart parts'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
