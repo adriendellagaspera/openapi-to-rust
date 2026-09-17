@@ -22,6 +22,12 @@ fn repeated_scalar_fields_and_nullable_binary_parts_generate_typed_multipart()
                     },
                     "responses": {"204": {"description": "Uploaded"}}
                 }
+            },
+            "/uploads/compat": {
+                "post": {
+                    "operationId": "createUploadWithMultipartFilenames",
+                    "responses": {"204": {"description": "Compatibility operation"}}
+                }
             }
         },
         "components": {
@@ -36,7 +42,7 @@ fn repeated_scalar_fields_and_nullable_binary_parts_generate_typed_multipart()
                 },
                 "UploadRequest": {
                     "type": "object",
-                    "required": ["labels"],
+                    "required": ["labels", "file", "thumbnail"],
                     "properties": {
                         "labels": {
                             "type": "array",
@@ -51,7 +57,8 @@ fn repeated_scalar_fields_and_nullable_binary_parts_generate_typed_multipart()
                                 {"$ref": "#/components/schemas/File"},
                                 {"type": "null"}
                             ]
-                        }
+                        },
+                        "thumbnail": {"$ref": "#/components/schemas/File"}
                     }
                 }
             }
@@ -82,8 +89,39 @@ fn repeated_scalar_fields_and_nullable_binary_parts_generate_typed_multipart()
         "enum arrays must use repeated multipart fields: {client}"
     );
     assert!(
-        client.contains("reqwest::multipart::Part::bytes(value.to_vec())"),
-        "nullable referenced binary schemas must remain binary multipart parts: {client}"
+        client.contains("pub async fn create_upload_with_multipart_filenames_2("),
+        "the additive filename variant must be allocated around real operation names: {client}"
+    );
+    assert!(
+        client.contains("pub async fn create_upload_with_multipart_filenames("),
+        "the real operation must retain its historical name: {client}"
+    );
+    assert!(
+        client.contains("multipart_filenames: &[(&str, &str)]"),
+        "filename overrides must be request-local rather than client state: {client}"
+    );
+    assert!(
+        client.contains("*field == \"file\"") && client.contains("*field == \"thumbnail\""),
+        "each binary field must resolve its own filename override: {client}"
+    );
+    let base_start = client
+        .find("pub async fn create_upload(")
+        .expect("base multipart method");
+    let variant_start = client
+        .find("pub async fn create_upload_with_multipart_filenames_2(")
+        .expect("allocated filename variant");
+    let base_method = &client[base_start..variant_start];
+    assert!(
+        base_method.contains("reqwest::multipart::Part::bytes(value.to_vec())"),
+        "the historical multipart method must still emit raw byte parts: {base_method}"
+    );
+    assert!(
+        !base_method.contains(".file_name("),
+        "the additive filename API must not change historical multipart wire semantics: {base_method}"
+    );
+    assert!(
+        client[variant_start..].contains("part.file_name((*filename).to_string())"),
+        "the additive method must apply only explicit per-field filename overrides: {client}"
     );
     Ok(())
 }
