@@ -292,6 +292,7 @@ fn selective_client_pruning_keeps_selected_builder_root() {
         client: Some(ClientSection {
             operations: vec!["createInvitation".into()],
             prune_models: true,
+            request_discriminators: Vec::new(),
         }),
         ..Default::default()
     });
