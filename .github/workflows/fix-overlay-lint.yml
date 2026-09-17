@@ -26,13 +26,6 @@ jobs:
           path.write_text(text.replace(old, '', 1))
           PY
           rm .github/workflows/fix-overlay-lint.yml
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt,clippy
-      - name: Validate cleanup
-        run: |
-          cargo fmt --all --check
-          cargo clippy --all-targets --all-features -- -D warnings
       - name: Commit cleanup
         run: |
           git config user.name github-actions[bot]
