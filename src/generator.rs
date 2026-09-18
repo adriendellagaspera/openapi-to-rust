@@ -2,8 +2,9 @@ use crate::{
     GeneratorError, Result,
     analysis::{SchemaAnalysis, SchemaType},
     binding_manifest::{
-        BINDING_MANIFEST_SCHEMA_VERSION, BindingField, BindingManifest,
-        BindingManifestGenerator, BindingVariant, RawClientBinding, render_rust_type,
+        BINDING_MANIFEST_SCHEMA, BINDING_MANIFEST_SCHEMA_VERSION, BindingField,
+        BindingManifest, BindingManifestGenerator, BindingVariant, RawClientBinding,
+        render_rust_type,
     },
     streaming::StreamingConfig,
 };
@@ -701,6 +702,7 @@ impl CodeGenerator {
         };
 
         Ok(BindingManifest {
+            schema: BINDING_MANIFEST_SCHEMA,
             schema_version: BINDING_MANIFEST_SCHEMA_VERSION,
             generator: BindingManifestGenerator {
                 name: "openapi-to-rust",
