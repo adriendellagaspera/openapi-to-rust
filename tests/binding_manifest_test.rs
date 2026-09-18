@@ -86,12 +86,11 @@ fn spec() -> serde_json::Value {
     })
 }
 
-fn generator(emit_binding_manifest: bool) -> CodeGenerator {
+fn generator() -> CodeGenerator {
     CodeGenerator::new(GeneratorConfig {
         spec_path: PathBuf::from("fixture.json"),
         output_dir: PathBuf::from("target/binding-manifest-fixture"),
         module_name: "fixture".to_string(),
-        emit_binding_manifest,
         enable_async_client: true,
         client: Some(ClientSection {
             operations: Vec::new(),
@@ -112,7 +111,7 @@ fn generator(emit_binding_manifest: bool) -> CodeGenerator {
 fn manifest_carries_shared_model_and_operation_plans() -> Result<(), Box<dyn std::error::Error>> {
     let mut analyzer = SchemaAnalyzer::new(spec())?;
     let analysis = analyzer.analyze()?;
-    let generator = generator(false);
+    let generator = generator();
     let manifest = generator.binding_manifest(&analysis)?;
 
     assert_eq!(manifest.schema_version, BINDING_MANIFEST_SCHEMA_VERSION);
@@ -216,18 +215,19 @@ fn manifest_carries_shared_model_and_operation_plans() -> Result<(), Box<dyn std
 }
 
 #[test]
-fn opt_in_manifest_is_part_of_generation_artifacts() -> Result<(), Box<dyn std::error::Error>> {
+fn manifest_api_is_additive_to_generation_result() -> Result<(), Box<dyn std::error::Error>> {
     let mut analyzer = SchemaAnalyzer::new(spec())?;
     let mut analysis = analyzer.analyze()?;
-    let generator = generator(true);
-    let expected = generator.render_binding_manifest(&analysis)?;
+    let generator = generator();
+    let manifest = generator.render_binding_manifest(&analysis)?;
     let result = generator.generate_all(&mut analysis)?;
-    let manifest = result
-        .files
-        .iter()
-        .find(|file| file.path == std::path::Path::new(BINDING_MANIFEST_FILE_NAME))
-        .expect("binding manifest artifact");
-    assert_eq!(manifest.content, expected);
+    assert!(manifest.contains("\"schema_version\": 1"));
+    assert!(
+        result
+            .files
+            .iter()
+            .all(|file| file.path != std::path::Path::new(BINDING_MANIFEST_FILE_NAME))
+    );
     assert!(
         result
             .mod_file
@@ -239,7 +239,7 @@ fn opt_in_manifest_is_part_of_generation_artifacts() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn config_opt_in_maps_to_generator_config() -> Result<(), Box<dyn std::error::Error>> {
+fn config_opt_in_is_preserved_without_changing_generator_config() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let spec_path = directory.path().join("spec.json");
     std::fs::write(&spec_path, serde_json::to_vec_pretty(&spec())?)?;
@@ -259,6 +259,6 @@ enable_async_client = true
     )?;
     let config = ConfigFile::load(&config_path)?;
     assert!(config.generator.binding_manifest);
-    assert!(config.into_generator_config().emit_binding_manifest);
+    let _generator_config = config.into_generator_config();
     Ok(())
 }
