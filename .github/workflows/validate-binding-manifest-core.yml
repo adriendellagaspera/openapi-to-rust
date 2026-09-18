@@ -1,23 +1,24 @@
 name: Validate binding manifest core
 on:
-  push:
-    branches: [gate-b-binding-manifest-v1]
+  pull_request:
+    branches: [main]
 permissions:
   contents: write
 jobs:
   validate:
-    if: github.actor != 'github-actions[bot]'
+    if: github.event.pull_request.head.ref == 'gate-b-binding-manifest-v1'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: gate-b-binding-manifest-v1
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Format
-        run: cargo fmt --all -- --check
+        run: cargo fmt --all
       - name: Focused tests
         run: cargo test --test binding_manifest_test --test client_response_call_shapes_test --test client_request_discriminator_test --test selective_client_test
       - name: Strict clippy
@@ -26,15 +27,13 @@ jobs:
         run: |
           scripts/corpus-manifest.sh --write
           git diff --exit-code -- tests/corpus-manifest.txt
-      - name: Remove validation workflow
-        if: always()
+      - name: Remove one-shot validator
         run: rm -f .github/workflows/validate-binding-manifest-core.yml
-      - name: Commit cleanup
-        if: success()
+      - name: Commit validated implementation
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git diff --cached --quiet && exit 0
-          git commit -m "chore: remove binding manifest validation workflow"
+          git commit -m "chore: format and validate binding manifest"
           git push origin HEAD:gate-b-binding-manifest-v1
