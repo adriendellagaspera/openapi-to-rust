@@ -591,7 +591,7 @@ impl CodeGenerator {
                     let has_nested_discriminated_union = variants.iter().any(|variant| {
                         analysis.schemas.get(&variant.type_name).is_some_and(|schema| {
                             matches!(
-                                schema.schema_type,
+                                &schema.schema_type,
                                 crate::analysis::SchemaType::DiscriminatedUnion { .. }
                             )
                         })
