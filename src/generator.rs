@@ -2936,6 +2936,33 @@ impl CodeGenerator {
         }
     }
 
+    fn plan_discriminated_enum_variants<'a>(
+        &self,
+        schema: &crate::analysis::AnalyzedSchema,
+        variants: &'a [crate::analysis::UnionVariant],
+        analysis: &crate::analysis::SchemaAnalysis,
+    ) -> Vec<(&'a crate::analysis::UnionVariant, syn::Ident, TokenStream)> {
+        let enclosing = self.to_rust_type_name(&schema.name);
+        variants
+            .iter()
+            .map(|variant| {
+                let variant_name = format_ident!("{}", variant.rust_name);
+                let variant_type = format_ident!("{}", self.to_rust_type_name(&variant.type_name));
+                let payload = if self.to_rust_type_name(&variant.type_name) == enclosing
+                    || analysis
+                        .dependencies
+                        .recursive_schemas
+                        .contains(&variant.type_name)
+                {
+                    quote! { Box<#variant_type> }
+                } else {
+                    quote! { #variant_type }
+                };
+                (variant, variant_name, payload)
+            })
+            .collect()
+    }
+
     fn generate_discriminated_enum(
         &self,
         schema: &crate::analysis::AnalyzedSchema,
@@ -2971,28 +2998,7 @@ impl CodeGenerator {
             return self.generate_union_enum(schema, &schema_refs, exclusive, analysis);
         }
 
-        let enclosing = self.to_rust_type_name(&schema.name);
-        let variant_shapes: Vec<_> = variants
-            .iter()
-            .map(|variant| {
-                let variant_name = format_ident!("{}", variant.rust_name);
-                let variant_type = format_ident!("{}", self.to_rust_type_name(&variant.type_name));
-                // Box variant payloads that point at the enclosing enum or any
-                // schema in the analysis's recursive set, otherwise the enum has
-                // infinite size (E0072).
-                let payload = if self.to_rust_type_name(&variant.type_name) == enclosing
-                    || analysis
-                        .dependencies
-                        .recursive_schemas
-                        .contains(&variant.type_name)
-                {
-                    quote! { Box<#variant_type> }
-                } else {
-                    quote! { #variant_type }
-                };
-                (variant, variant_name, payload)
-            })
-            .collect();
+        let variant_shapes = self.plan_discriminated_enum_variants(schema, variants, analysis);
         let enum_variants = variant_shapes.iter().map(|(_, variant_name, payload)| {
             quote! { #variant_name(#payload), }
         });
