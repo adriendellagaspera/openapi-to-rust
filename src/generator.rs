@@ -128,6 +128,8 @@ pub struct GeneratorConfig {
     /// header as a hint and is otherwise used only by the streaming
     /// codegen for naming the SSE client module.
     pub module_name: String,
+    /// Emit deterministic generator-owned binding metadata.
+    pub emit_binding_manifest: bool,
     /// Enable SSE streaming client generation
     pub enable_sse_client: bool,
     /// Enable async HTTP client generation
@@ -183,6 +185,7 @@ impl Default for GeneratorConfig {
             spec_path: "openapi.json".into(),
             output_dir: "src/gen".into(),
             module_name: "api_types".to_string(),
+            emit_binding_manifest: false,
             enable_sse_client: true,
             enable_async_client: true,
             enable_specta: false,
@@ -824,6 +827,13 @@ impl CodeGenerator {
             files.iter().map(|file| file.content.as_str()),
             self.config.enable_specta,
         );
+
+        if self.config.emit_binding_manifest {
+            files.push(GeneratedFile {
+                path: crate::binding_manifest::BINDING_MANIFEST_FILE_NAME.into(),
+                content: self.render_binding_manifest(analysis)?,
+            });
+        }
 
         Ok(GenerationResult {
             files,
