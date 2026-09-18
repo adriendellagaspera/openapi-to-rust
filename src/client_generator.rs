@@ -330,6 +330,12 @@ struct ClientOperationMethodPlan<'a> {
     multipart_filename_method_name: Option<syn::Ident>,
 }
 
+#[derive(Clone)]
+struct ClientMethodParameterPlan {
+    ident: syn::Ident,
+    rust_type: TokenStream,
+}
+
 impl CodeGenerator {
     pub(crate) fn generate_http_response_stream_type_alias(
         &self,
@@ -3201,13 +3207,21 @@ impl CodeGenerator {
 
     /// Generate request parameters including path, query, header, and request body.
     fn generate_request_param(&self, op: &OperationInfo) -> TokenStream {
+        let params = self.plan_request_params(op);
+        let params = params.iter().map(|param| {
+            let ident = &param.ident;
+            let rust_type = &param.rust_type;
+            quote! { #ident: #rust_type }
+        });
+        quote! { #(#params),* }
+    }
+
+    fn plan_request_params(&self, op: &OperationInfo) -> Vec<ClientMethodParameterPlan> {
         let mut params = Vec::new();
-        // Dedup parameter Rust idents within this method signature. Real-world
-        // specs sometimes declare two parameters that sanitize to the same
-        // snake_case name (modern-treasury declared `name` twice across
-        // different param objects). Suffixing with `_2`, `_3`, … keeps each
-        // parameter accessible while preserving the original wire-level name
-        // (which is used elsewhere as the query/path/header key).
+        // This allocation is shared by source rendering and binding metadata.
+        // Real-world specs may contain parameter names that sanitize to the
+        // same Rust identifier, so preserve the renderer's deterministic
+        // suffixing in the plan itself.
         let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut unique_param_ident = |raw: String| -> syn::Ident {
             let mut chosen = raw.clone();
@@ -3219,116 +3233,64 @@ impl CodeGenerator {
             Self::to_field_ident(&chosen)
         };
 
-        // Add path parameters
-        for param in &op.parameters {
-            if param.location == "path" {
-                let param_name_snake = self.param_ident_str(param);
-                let param_name = unique_param_ident(param_name_snake);
-                let param_type = self.get_param_rust_type(param);
-                params.push(quote! { #param_name: #param_type });
-            }
-        }
-
-        // Add query parameters (all as Option<T>)
-        for param in &op.parameters {
-            if param.location == "query" {
-                let param_name_snake = self.param_ident_str(param);
-                let param_name = unique_param_ident(param_name_snake);
-                let param_type = self.get_param_rust_type(param);
-
-                // Query parameters should be Option unless explicitly required
-                if param.required {
-                    params.push(quote! { #param_name: #param_type });
-                } else {
-                    params.push(quote! { #param_name: Option<#param_type> });
+        for location in ["path", "query", "header", "cookie"] {
+            for param in &op.parameters {
+                if param.location != location {
+                    continue;
                 }
-            }
-        }
-
-        // Add header parameters. Required headers are bare; optional ones are
-        // Option<T>. Per OAS 3.x §"Parameter Object", header names matching
-        // `Accept`, `Content-Type`, and `Authorization` are forbidden — those
-        // are described by other mechanisms — but we leave that validation to
-        // analysis.
-        for param in &op.parameters {
-            if param.location == "header" {
-                let param_name_snake = self.param_ident_str(param);
-                let param_name = unique_param_ident(param_name_snake);
-                let param_type = self.get_param_rust_type(param);
-                if param.required {
-                    params.push(quote! { #param_name: #param_type });
+                let ident = unique_param_ident(self.param_ident_str(param));
+                let base = self.get_param_rust_type(param);
+                let rust_type = if location == "path" || param.required {
+                    base
                 } else {
-                    params.push(quote! { #param_name: Option<#param_type> });
-                }
-            }
-        }
-
-        for param in &op.parameters {
-            if param.location == "cookie" {
-                let param_name_snake = self.param_ident_str(param);
-                let param_name = unique_param_ident(param_name_snake);
-                let param_type = self.get_param_rust_type(param);
-                if param.required {
-                    params.push(quote! { #param_name: #param_type });
-                } else {
-                    params.push(quote! { #param_name: Option<#param_type> });
-                }
-            }
-        }
-
-        // Add request body parameter based on content type. Optional bodies
-        // (`requestBody.required` is false or absent) become `Option<T>` per T11.
-        if let Some(ref rb) = op.request_body {
-            use crate::analysis::RequestBodyContent;
-            if matches!(rb, RequestBodyContent::SchemaLess { .. }) {
-                return if params.is_empty() {
-                    quote! {}
-                } else {
-                    quote! { #(#params),* }
+                    quote! { Option<#base> }
                 };
-            }
-            let required = op.request_body_required;
-            let body_type = match rb {
-                RequestBodyContent::Json { schema_name, .. }
-                | RequestBodyContent::FormUrlEncoded { schema_name, .. }
-                | RequestBodyContent::Multipart { schema_name, .. } => {
-                    let rust_type_name = self.to_rust_type_name(schema_name);
-                    let request_ident =
-                        syn::Ident::new(&rust_type_name, proc_macro2::Span::call_site());
-                    quote! { #request_ident }
-                }
-
-                RequestBodyContent::OctetStream { .. } | RequestBodyContent::Binary { .. } => {
-                    quote! { Vec<u8> }
-                }
-                RequestBodyContent::TextPlain { .. } => quote! { String },
-                RequestBodyContent::Unsupported { .. } => quote! { Vec<u8> },
-                RequestBodyContent::SchemaLess { .. } => unreachable!(
-                    "schema-less request bodies preserve the historical client signature"
-                ),
-            };
-            let body_ident = match rb {
-                RequestBodyContent::OctetStream { .. }
-                | RequestBodyContent::Binary { .. }
-                | RequestBodyContent::TextPlain { .. }
-                | RequestBodyContent::Unsupported { .. } => quote! { body },
-                RequestBodyContent::SchemaLess { .. } => unreachable!(
-                    "schema-less request bodies preserve the historical client signature"
-                ),
-                _ => quote! { request },
-            };
-            if required {
-                params.push(quote! { #body_ident: #body_type });
-            } else {
-                params.push(quote! { #body_ident: Option<#body_type> });
+                params.push(ClientMethodParameterPlan { ident, rust_type });
             }
         }
 
-        if params.is_empty() {
-            quote! {}
+        let Some(ref rb) = op.request_body else {
+            return params;
+        };
+        use crate::analysis::RequestBodyContent;
+        if matches!(rb, RequestBodyContent::SchemaLess { .. }) {
+            return params;
+        }
+        let body_type = match rb {
+            RequestBodyContent::Json { schema_name, .. }
+            | RequestBodyContent::FormUrlEncoded { schema_name, .. }
+            | RequestBodyContent::Multipart { schema_name, .. } => {
+                let rust_type_name = self.to_rust_type_name(schema_name);
+                let request_ident =
+                    syn::Ident::new(&rust_type_name, proc_macro2::Span::call_site());
+                quote! { #request_ident }
+            }
+            RequestBodyContent::OctetStream { .. } | RequestBodyContent::Binary { .. } => {
+                quote! { Vec<u8> }
+            }
+            RequestBodyContent::TextPlain { .. } => quote! { String },
+            RequestBodyContent::Unsupported { .. } => quote! { Vec<u8> },
+            RequestBodyContent::SchemaLess { .. } => unreachable!(
+                "schema-less request bodies preserve the historical client signature"
+            ),
+        };
+        let ident = match rb {
+            RequestBodyContent::OctetStream { .. }
+            | RequestBodyContent::Binary { .. }
+            | RequestBodyContent::TextPlain { .. }
+            | RequestBodyContent::Unsupported { .. } => Self::to_field_ident("body"),
+            RequestBodyContent::SchemaLess { .. } => unreachable!(
+                "schema-less request bodies preserve the historical client signature"
+            ),
+            _ => Self::to_field_ident("request"),
+        };
+        let rust_type = if op.request_body_required {
+            body_type
         } else {
-            quote! { #(#params),* }
-        }
+            quote! { Option<#body_type> }
+        };
+        params.push(ClientMethodParameterPlan { ident, rust_type });
+        params
     }
 
     /// Get the Rust type for a parameter
