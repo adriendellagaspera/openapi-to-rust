@@ -216,6 +216,9 @@ pub struct GeneratorSection {
     /// Additive operation-builder generation policy.
     #[serde(default)]
     pub builders: BuildersSection,
+    /// Emit deterministic generator-owned binding metadata next to generated Rust.
+    #[serde(default)]
+    pub binding_manifest: bool,
 }
 
 /// Configuration for additive `*_builder()` operation entry points.
@@ -536,6 +539,8 @@ struct GeneratorSectionWire {
     #[serde(default)]
     builders: BuildersSection,
     #[serde(default)]
+    binding_manifest: bool,
+    #[serde(default)]
     types: Option<crate::type_mapping::TypeMappingConfig>,
 }
 
@@ -563,6 +568,7 @@ impl TryFrom<ConfigFileWire> for ConfigFile {
                 overlays: wire.generator.overlays,
                 overlay_output: wire.generator.overlay_output,
                 builders: wire.generator.builders,
+                binding_manifest: wire.generator.binding_manifest,
             },
             features: wire.features,
             http_client: wire.http_client,
@@ -615,6 +621,7 @@ struct GeneratorSectionRef<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     overlay_output: Option<&'a PathBuf>,
     builders: &'a BuildersSection,
+    binding_manifest: bool,
     types: &'a crate::type_mapping::TypeMappingConfig,
 }
 
@@ -632,6 +639,7 @@ impl Serialize for ConfigFile {
                 overlays: &self.generator.overlays,
                 overlay_output: self.generator.overlay_output.as_ref(),
                 builders: &self.generator.builders,
+                binding_manifest: self.generator.binding_manifest,
                 types: &self.types,
             },
             features: &self.features,
@@ -1056,6 +1064,7 @@ impl ConfigFile {
             spec_path: self.generator.spec_path,
             output_dir: self.generator.output_dir,
             module_name: self.generator.module_name,
+            emit_binding_manifest: self.generator.binding_manifest,
             enable_sse_client: self.features.enable_sse_client,
             enable_async_client: self.features.enable_async_client,
             enable_specta: self.features.enable_specta,
