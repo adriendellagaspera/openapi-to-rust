@@ -31,6 +31,15 @@ fn spec() -> serde_json::Value {
                             "in": "query",
                             "required": false,
                             "schema": {"type": "integer"}
+                        },
+                        {
+                            "name": "order",
+                            "in": "query",
+                            "required": false,
+                            "schema": {
+                                "type": "string",
+                                "enum": ["created", "-created"]
+                            }
                         }
                     ],
                     "requestBody": {
@@ -229,17 +238,34 @@ fn manifest_carries_shared_model_and_operation_plans() -> Result<(), Box<dyn std
             )
         })
         .expect("JSON operation");
+    assert_eq!(json.parameters.len(), 4);
+    assert_eq!(json.parameters[0].name, "item_id");
+    assert_eq!(json.parameters[0].type_name, "impl AsRef<str>");
+    assert_eq!(json.parameters[1].name, "limit");
+    assert_eq!(json.parameters[1].type_name, "Option<i64>");
+    let order = &json.parameters[2];
+    assert_eq!(order.name, "order");
+    let order_enum = order
+        .type_name
+        .strip_prefix("Option<")
+        .and_then(|name| name.strip_suffix('>'))
+        .expect("optional parameter enum type");
     assert_eq!(
-        json.parameters
+        manifest.symbol_paths[order_enum],
+        format!("client::{order_enum}")
+    );
+    assert_eq!(
+        manifest.enums[order_enum]
             .iter()
-            .map(|parameter| (parameter.name.as_str(), parameter.type_name.as_str()))
+            .map(|variant| (variant.name.as_str(), variant.wire_name.as_deref()))
             .collect::<Vec<_>>(),
         vec![
-            ("item_id", "impl AsRef<str>"),
-            ("limit", "Option<i64>"),
-            ("request", "RenderRequest"),
+            ("Created", Some("created")),
+            ("Created2", Some("-created")),
         ]
     );
+    assert_eq!(json.parameters[3].name, "request");
+    assert_eq!(json.parameters[3].type_name, "RenderRequest");
     assert_eq!(json.success_type, "RenderResult");
     assert!(json.return_type.contains("ApiOpError<"));
     assert!(json.stream.is_none());
