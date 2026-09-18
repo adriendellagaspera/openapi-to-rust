@@ -74,11 +74,20 @@ fn binary_success_keeps_buffered_method_and_adds_collision_safe_stream_method()
         client.contains("Ok(Box::pin(response.bytes_stream()))"),
         "the streaming representation must return the live response body: {client}"
     );
+    assert_eq!(
+        client.matches("pub type HttpResponseByteStream =").count(),
+        1,
+        "streaming must expose exactly one public response-stream symbol: {client}"
+    );
     assert!(
-        client.contains("pub type HttpResponseByteStream = futures_util::stream::BoxStream")
-            && client
-                .contains("pub type HttpResponseByteStream = futures_util::stream::LocalBoxStream"),
-        "binary streaming must use the same portable owned ABI as SSE: {client}"
+        client.contains(
+            "type HttpResponseByteStreamPlatform = futures_util::stream::BoxStream"
+        ) && client.contains(
+            "type HttpResponseByteStreamPlatform = futures_util::stream::LocalBoxStream"
+        ) && client.contains(
+            "pub type HttpResponseByteStream = HttpResponseByteStreamPlatform"
+        ),
+        "binary streaming must preserve the portable native/wasm ABI behind one public alias: {client}"
     );
     Ok(())
 }
