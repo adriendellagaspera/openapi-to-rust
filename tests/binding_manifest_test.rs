@@ -199,7 +199,10 @@ fn manifest_carries_shared_model_and_operation_plans() -> Result<(), Box<dyn std
         .iter()
         .filter_map(|variant| variant.wire_name.as_deref())
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(animal_wire_names, std::collections::BTreeSet::from(["cat", "dog"]));
+    assert_eq!(
+        animal_wire_names,
+        std::collections::BTreeSet::from(["cat", "dog"])
+    );
 
     let render = manifest
         .operations
