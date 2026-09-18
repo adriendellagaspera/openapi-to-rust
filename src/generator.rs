@@ -2052,6 +2052,58 @@ impl CodeGenerator {
         })
     }
 
+    fn plan_string_enum_variants(
+        &self,
+        schema: &crate::analysis::AnalyzedSchema,
+        values: &[String],
+        ext: Option<&crate::analysis::EnumExtensions>,
+    ) -> Vec<(syn::Ident, String, bool, Option<String>)> {
+        let default_value = schema
+            .default
+            .as_ref()
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        let varnames_override: Option<&Vec<String>> = ext
+            .filter(|_| self.config.types.x_enum_varnames_enabled())
+            .map(|extension| &extension.varnames)
+            .filter(|varnames| !varnames.is_empty() && varnames.len() == values.len());
+        let descriptions_override: Option<&Vec<String>> = ext
+            .filter(|_| self.config.types.x_enum_descriptions_enabled())
+            .map(|extension| &extension.descriptions)
+            .filter(|descriptions| {
+                !descriptions.is_empty() && descriptions.len() == values.len()
+            });
+
+        let mut used = std::collections::HashSet::new();
+        values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let base = match varnames_override {
+                    Some(varnames) => varnames[index].clone(),
+                    None => self.to_rust_enum_variant(value),
+                };
+                let mut variant_name = base.clone();
+                let mut suffix = 2;
+                while !used.insert(variant_name.clone()) {
+                    variant_name = format!("{base}_{suffix}");
+                    suffix += 1;
+                }
+                let is_default = default_value
+                    .as_ref()
+                    .map_or(index == 0, |default| value == default);
+                let description =
+                    descriptions_override.map(|descriptions| descriptions[index].clone());
+                (
+                    format_ident!("{}", variant_name),
+                    value.clone(),
+                    is_default,
+                    description,
+                )
+            })
+            .collect()
+    }
+
     fn generate_string_enum(
         &self,
         schema: &crate::analysis::AnalyzedSchema,
@@ -2076,49 +2128,7 @@ impl CodeGenerator {
             None => !values.is_empty(),
         };
 
-        // Q2.6: x-enum-varnames overrides the default heuristic when
-        // present, length-matched, and the toggle is on. Falls back
-        // to the to_rust_enum_variant heuristic otherwise.
-        let varnames_override: Option<&Vec<String>> = ext
-            .filter(|_| self.config.types.x_enum_varnames_enabled())
-            .map(|e| &e.varnames)
-            .filter(|v| !v.is_empty() && v.len() == values.len());
-        let descriptions_override: Option<&Vec<String>> = ext
-            .filter(|_| self.config.types.x_enum_descriptions_enabled())
-            .map(|e| &e.descriptions)
-            .filter(|v| !v.is_empty() && v.len() == values.len());
-
-        // Variant-name uniqueness: enum values that PascalCase to the same
-        // identifier (e.g. `ASC`/`asc` both → `Asc`) collide and produce
-        // E0428 + non-exhaustive matches downstream. Dedupe by suffixing
-        // `_2`, `_3`, … on collisions while preserving the first occurrence's
-        // name, and keeping each variant's `#[serde(rename)]` pointed at the
-        // original wire string.
-        let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let variant_pairs: Vec<(syn::Ident, &String, bool, Option<String>)> = values
-            .iter()
-            .enumerate()
-            .map(|(i, value)| {
-                let base = match varnames_override {
-                    Some(v) => v[i].clone(),
-                    None => self.to_rust_enum_variant(value),
-                };
-                let mut variant_name = base.clone();
-                let mut suffix = 2;
-                while !used.insert(variant_name.clone()) {
-                    variant_name = format!("{base}_{suffix}");
-                    suffix += 1;
-                }
-                let variant_ident = format_ident!("{}", variant_name);
-                let is_default = if let Some(ref default) = default_value {
-                    value == default
-                } else {
-                    i == 0
-                };
-                let description = descriptions_override.map(|d| d[i].clone());
-                (variant_ident, value, is_default, description)
-            })
-            .collect();
+        let variant_pairs = self.plan_string_enum_variants(schema, values, ext);
 
         let variants =
             variant_pairs
@@ -3283,31 +3293,25 @@ impl CodeGenerator {
         false
     }
 
-    fn generate_union_enum(
+    fn plan_union_enum_variants(
         &self,
         schema: &crate::analysis::AnalyzedSchema,
         variants: &[crate::analysis::SchemaRef],
-        exclusive: bool,
         analysis: &crate::analysis::SchemaAnalysis,
-    ) -> Result<TokenStream> {
-        let enum_name = format_ident!("{}", self.to_rust_type_name(&schema.name));
-
-        // Generate meaningful variant names based on type names
+    ) -> Vec<(syn::Ident, TokenStream)> {
         let mut used_variant_names = std::collections::HashSet::new();
-        let enum_variants = variants
+        variants
             .iter()
             .enumerate()
-            .map(|(i, variant)| {
-                // Generate a meaningful variant name from the type name
+            .map(|(index, variant)| {
                 let base_variant_name = self.type_name_to_variant_name(&variant.target);
                 let variant_name = self.ensure_unique_variant_name_generator(
                     base_variant_name,
                     &mut used_variant_names,
-                    i,
+                    index,
                 );
                 let variant_name_ident = format_ident!("{}", variant_name);
 
-                // For primitive types and Vec types, use them directly without conversion
                 let variant_type_tokens = if matches!(
                     variant.target.as_str(),
                     "bool"
@@ -3328,15 +3332,10 @@ impl CodeGenerator {
                     let type_ident = format_ident!("{}", variant.target);
                     quote! { #type_ident }
                 } else if variant.target == "serde_json::Value" {
-                    // The target is a fully-qualified path; emit it as a path so
-                    // it doesn't get mangled into a phantom `SerdeJsonValue` ident.
                     quote! { serde_json::Value }
-                } else if variant.target.starts_with("Vec<") && variant.target.ends_with(">") {
-                    // Handle Vec types by parsing the inner type
+                } else if variant.target.starts_with("Vec<") && variant.target.ends_with('>') {
                     let inner = &variant.target[4..variant.target.len() - 1];
-
-                    // Handle nested Vec types (e.g., Vec<Vec<i64>>)
-                    if inner.starts_with("Vec<") && inner.ends_with(">") {
+                    if inner.starts_with("Vec<") && inner.ends_with('>') {
                         let inner_inner = &inner[4..inner.len() - 1];
                         if inner_inner == "serde_json::Value" {
                             quote! { Vec<Vec<serde_json::Value>> }
@@ -3391,10 +3390,6 @@ impl CodeGenerator {
                         quote! { Vec<#inner_type> }
                     }
                 } else if variant.target.contains("::") || variant.target.contains('<') {
-                    // Qualified Rust path or generic (chrono::DateTime<chrono::Utc>,
-                    // bytes::Bytes, std::net::Ipv4Addr) emitted by TypeMapper. Pass
-                    // it straight to syn — the to_rust_type_name PascalCase
-                    // pipeline below would mangle it into a non-existent ident.
                     parse_rust_type(&variant.target).unwrap_or_else(|_| {
                         let fallback = format_ident!("{}", self.to_rust_type_name(&variant.target));
                         quote! { #fallback }
@@ -3404,15 +3399,9 @@ impl CodeGenerator {
                     quote! { #type_ident }
                 };
 
-                // Self-referential variant (variant payload type == enclosing
-                // enum) yields an infinite-size enum (E0072). Wrap in `Box<T>` to
-                // break the cycle. Observed in microsoft-graph.yaml.
                 let target_rust_name = self.to_rust_type_name(&variant.target);
                 let enclosing_name = self.to_rust_type_name(&schema.name);
                 let is_self_ref = target_rust_name == enclosing_name;
-                // Indirect cycles (stripe BankAccount → BankAccountCustomer →
-                // Customer → BankAccountCustomer): variants pointing into the
-                // analysis's recursive_schemas set must also be heap-allocated.
                 let is_recursive_target = analysis
                     .dependencies
                     .recursive_schemas
@@ -3430,7 +3419,19 @@ impl CodeGenerator {
 
                 (variant_name_ident, variant_type_tokens)
             })
-            .collect::<Vec<_>>();
+            .collect()
+    }
+
+    fn generate_union_enum(
+        &self,
+        schema: &crate::analysis::AnalyzedSchema,
+        variants: &[crate::analysis::SchemaRef],
+        exclusive: bool,
+        analysis: &crate::analysis::SchemaAnalysis,
+    ) -> Result<TokenStream> {
+        let enum_name = format_ident!("{}", self.to_rust_type_name(&schema.name));
+
+        let enum_variants = self.plan_union_enum_variants(schema, variants, analysis);
         let variant_declarations = enum_variants
             .iter()
             .map(|(variant_name, variant_type)| quote! { #variant_name(#variant_type), })
