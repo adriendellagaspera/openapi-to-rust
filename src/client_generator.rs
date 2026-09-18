@@ -356,19 +356,23 @@ impl CodeGenerator {
 
         quote! {
             #[cfg(not(target_arch = "wasm32"))]
-            type HttpResponseByteStreamPlatform = futures_util::stream::BoxStream<
-                'static,
-                Result<bytes::Bytes, reqwest::Error>,
-            >;
+            mod __http_response_byte_stream {
+                pub type Type = futures_util::stream::BoxStream<
+                    'static,
+                    Result<bytes::Bytes, reqwest::Error>,
+                >;
+            }
 
             #[cfg(target_arch = "wasm32")]
-            type HttpResponseByteStreamPlatform = futures_util::stream::LocalBoxStream<
-                'static,
-                Result<bytes::Bytes, reqwest::Error>,
-            >;
+            mod __http_response_byte_stream {
+                pub type Type = futures_util::stream::LocalBoxStream<
+                    'static,
+                    Result<bytes::Bytes, reqwest::Error>,
+                >;
+            }
 
             /// Owned byte stream returned by streaming HTTP responses.
-            pub type HttpResponseByteStream = HttpResponseByteStreamPlatform;
+            pub type HttpResponseByteStream = __http_response_byte_stream::Type;
         }
     }
 
