@@ -7,6 +7,9 @@ use std::collections::BTreeMap;
 /// File name used when generator-owned binding metadata is emitted.
 pub const BINDING_MANIFEST_FILE_NAME: &str = "binding-manifest.json";
 
+/// Stable identifier of the generator-owned binding metadata contract.
+pub const BINDING_MANIFEST_SCHEMA: &str = "openapi-to-rust.binding-manifest";
+
 /// Version of the generator-owned binding metadata contract.
 pub const BINDING_MANIFEST_SCHEMA_VERSION: u32 = 1;
 
@@ -16,6 +19,7 @@ pub const BINDING_MANIFEST_SCHEMA_VERSION: u32 = 1;
 /// not own the crate path at which consumers mount generated files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BindingManifest {
+    pub schema: &'static str,
     pub schema_version: u32,
     pub generator: BindingManifestGenerator,
     pub structs: BTreeMap<String, Vec<BindingField>>,
