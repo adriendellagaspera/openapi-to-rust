@@ -627,11 +627,11 @@ impl CodeGenerator {
                     } else {
                         self.plan_discriminated_enum_variants(schema, variants, analysis)
                             .into_iter()
-                            .map(|(_, name, payload)| {
+                            .map(|(variant, name, payload)| {
                                 Ok(BindingVariant {
                                     name: name.to_string(),
                                     payload: Some(render_rust_type(payload)?),
-                                    wire_name: None,
+                                    wire_name: Some(variant.discriminator_value.clone()),
                                 })
                             })
                             .collect::<Result<Vec<_>>>()?
