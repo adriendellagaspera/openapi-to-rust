@@ -441,37 +441,6 @@ impl CodeGenerator {
         &self.config
     }
 
-    /// Compute parameter-enum variant names from the same normalization used by
-    /// client source rendering and binding metadata.
-    pub(crate) fn parameter_enum_variant_names(
-        &self,
-        param: &crate::analysis::ParameterInfo,
-    ) -> Vec<String> {
-        let Some(values) = param.enum_values.as_deref() else {
-            return Vec::new();
-        };
-        let mut used = std::collections::HashSet::new();
-        values
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
-                let base = param
-                    .enum_varnames
-                    .as_ref()
-                    .and_then(|names| names.get(index))
-                    .map(|name| self.to_rust_enum_variant(name))
-                    .unwrap_or_else(|| self.to_rust_enum_variant(value));
-                let mut chosen = base.clone();
-                let mut suffix = 2;
-                while !used.insert(chosen.clone()) {
-                    chosen = format!("{base}{suffix}");
-                    suffix += 1;
-                }
-                chosen
-            })
-            .collect()
-    }
-
     /// Build deterministic generator-owned metadata for the Rust bindings
     /// represented by the supplied analyzed document.
     pub fn binding_manifest(&self, analysis: &SchemaAnalysis) -> Result<BindingManifest> {
