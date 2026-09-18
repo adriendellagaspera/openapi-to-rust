@@ -115,6 +115,7 @@ fn generate_client(selectors: Option<Vec<&str>>) -> String {
     let client = selectors.map(|operations| ClientSection {
         operations: operations.into_iter().map(str::to_string).collect(),
         prune_models: false,
+        request_discriminators: Vec::new(),
     });
     let generator = CodeGenerator::new(GeneratorConfig {
         enable_async_client: true,
@@ -175,6 +176,7 @@ fn client_resolution_errors_cover_unknown_ambiguous_and_renamed_ids() {
         client: Some(ClientSection {
             operations: vec!["getUsr".into()],
             prune_models: false,
+            request_discriminators: Vec::new(),
         }),
         ..Default::default()
     })
@@ -192,6 +194,7 @@ fn client_resolution_errors_cover_unknown_ambiguous_and_renamed_ids() {
             client: Some(ClientSection {
                 operations: vec![selector.to_string()],
                 prune_models: false,
+                request_discriminators: Vec::new(),
             }),
             ..Default::default()
         })
@@ -213,6 +216,7 @@ fn client_resolution_errors_cover_unknown_ambiguous_and_renamed_ids() {
         client: Some(ClientSection {
             operations: vec!["GET /first".into(), "foo_post".into(), "Foo_put".into()],
             prune_models: false,
+            request_discriminators: Vec::new(),
         }),
         ..Default::default()
     })
@@ -299,6 +303,7 @@ fn empty_client_scope_prunes_only_schemas_unreachable_from_all_operations() {
         client: Some(ClientSection {
             operations: Vec::new(),
             prune_models: true,
+            request_discriminators: Vec::new(),
         }),
         ..Default::default()
     })
@@ -332,6 +337,7 @@ fn disabled_client_scope_is_ignored_and_registry_keeps_all_operations() {
         client: Some(ClientSection {
             operations: vec!["doesNotExist".into()],
             prune_models: true,
+            request_discriminators: Vec::new(),
         }),
         ..Default::default()
     })
@@ -366,6 +372,7 @@ fn registry_only_pruning_does_not_reintroduce_an_async_client_scope() {
         client: Some(ClientSection {
             operations: vec!["doesNotExist".into()],
             prune_models: true,
+            request_discriminators: Vec::new(),
         }),
         server: Some(ServerSection {
             framework: "axum".into(),
@@ -402,6 +409,7 @@ fn selective_client_does_not_make_custom_method_registry_lossy() {
         client: Some(ClientSection {
             operations: vec!["GET /things".into()],
             prune_models: false,
+            request_discriminators: Vec::new(),
         }),
         ..Default::default()
     })
@@ -599,6 +607,7 @@ fn standalone_client_generation_does_not_validate_server_scope() {
         client: Some(ClientSection {
             operations: vec!["getUser".into()],
             prune_models: false,
+            request_discriminators: Vec::new(),
         }),
         server: Some(ServerSection {
             framework: "axum".into(),
@@ -632,6 +641,7 @@ fn streaming_operation_ids_use_alias_aware_resolution() {
         client: Some(ClientSection {
             operations: vec!["GET /first".into()],
             prune_models: true,
+            request_discriminators: Vec::new(),
         }),
         streaming_config: Some(StreamingConfig {
             endpoints: vec![endpoint],
@@ -713,6 +723,7 @@ fn model_pruning_keeps_union_of_client_and_server_reachability() {
         client: Some(ClientSection {
             operations: vec!["callRemote".into()],
             prune_models: true,
+            request_discriminators: Vec::new(),
         }),
         server: Some(ServerSection {
             framework: "axum".into(),
@@ -798,6 +809,7 @@ fn selected_operation_retains_owned_inline_schemas_only() {
         client: Some(ClientSection {
             operations: vec!["selectedOp".into()],
             prune_models: true,
+            request_discriminators: Vec::new(),
         }),
         ..Default::default()
     });
@@ -835,6 +847,7 @@ fn selective_openai_client_compiles() {
         client: Some(ClientSection {
             operations: vec!["createResponse".into()],
             prune_models: true,
+            request_discriminators: Vec::new(),
         }),
         ..Default::default()
     });

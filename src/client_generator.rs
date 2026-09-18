@@ -151,6 +151,7 @@ use crate::analysis::{
     OperationInfo, OperationResponseBody, OperationResponseRepresentation, ParameterInfo,
     SchemaAnalysis,
 };
+use crate::config::{RequestDiscriminatorTransport, RequestDiscriminatorValue};
 use crate::generator::CodeGenerator;
 use heck::{ToPascalCase, ToSnakeCase};
 use proc_macro2::TokenStream;
@@ -169,7 +170,10 @@ struct BodyFieldPlan {
     value_ident: syn::Ident,
     value_type: TokenStream,
     access_path: Vec<syn::Ident>,
+    is_required: bool,
+    nullable: bool,
     tri_state: bool,
+    schema_type: crate::analysis::SchemaType,
 }
 
 #[derive(Clone, Copy)]
@@ -269,6 +273,20 @@ pub struct SourceOperationIdentity {
 /// Source rendering and generator-owned binding metadata consume this same
 /// object so naming, response representation and success-type decisions are
 /// made once.
+/// One validated request discriminator attached to the exact response
+/// representation it selects. The access path and Rust value type come from
+/// the same emitted request-model projection used by source rendering.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ClientRequestDiscriminatorPlan {
+    pub wire_name: String,
+    pub rust_access_path: Vec<String>,
+    pub rust_value_type: String,
+    pub value: RequestDiscriminatorValue,
+    pub field_required: bool,
+    pub field_nullable: bool,
+    pub field_tri_state: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ClientCallShapePlan {
     pub source_operation: SourceOperationIdentity,
@@ -277,6 +295,7 @@ pub struct ClientCallShapePlan {
     pub representation: ClientResponseRepresentation,
     pub success_statuses: Vec<String>,
     pub success_type: String,
+    pub request_discriminators: Vec<ClientRequestDiscriminatorPlan>,
 }
 
 #[derive(Clone)]
@@ -300,6 +319,7 @@ struct BodyModelPlan {
     body_ident: syn::Ident,
     body_type: TokenStream,
     required_construction: RequiredBodyConstruction,
+    all_fields: Vec<BodyFieldPlan>,
     optional_fields: Vec<BodyFieldPlan>,
 }
 
@@ -645,6 +665,10 @@ impl CodeGenerator {
     /// configured `[client].operations` scope.
     pub fn generate_operation_methods(&self, analysis: &SchemaAnalysis) -> TokenStream {
         let operations: Vec<&OperationInfo> = analysis.operations.values().collect();
+        if let Err(error) = self.validate_client_request_discriminators(analysis, &operations) {
+            let message = error.to_string();
+            return quote! { compile_error!(#message); };
+        }
         self.generate_operation_methods_for(analysis, &operations)
     }
 
@@ -698,6 +722,22 @@ impl CodeGenerator {
             .into_iter()
             .flat_map(|plan| plan.call_shapes)
             .collect()
+    }
+
+    /// Fail-closed call-shape planning for consumers that need generator-owned
+    /// request discriminator metadata as well as response transport identity.
+    pub fn try_plan_client_call_shapes(
+        &self,
+        analysis: &SchemaAnalysis,
+    ) -> crate::Result<Vec<ClientCallShapePlan>> {
+        let client_ids = self.resolve_client_operation_ids(analysis)?;
+        let operations = self.client_operations(analysis, client_ids.as_ref());
+        self.validate_client_request_discriminators(analysis, &operations)?;
+        Ok(self
+            .plan_client_operation_methods(analysis, &operations)
+            .into_iter()
+            .flat_map(|plan| plan.call_shapes)
+            .collect())
     }
 
     fn plan_client_operation_methods<'a>(
@@ -871,6 +911,8 @@ impl CodeGenerator {
         representation: ClientResponseRepresentation,
         success_statuses: Vec<String>,
     ) -> ClientCallShapePlan {
+        let request_discriminators =
+            self.request_discriminator_plans_for_shape(analysis, operation, &representation);
         ClientCallShapePlan {
             source_operation: Self::source_operation_identity(analysis, operation),
             emitted_operation_id: operation.operation_id.clone(),
@@ -878,6 +920,289 @@ impl CodeGenerator {
             rust_method_name,
             representation,
             success_statuses,
+            request_discriminators,
+        }
+    }
+
+    pub(crate) fn validate_client_request_discriminators(
+        &self,
+        analysis: &SchemaAnalysis,
+        operations: &[&OperationInfo],
+    ) -> crate::Result<()> {
+        let Some(client) = self.config().client.as_ref() else {
+            return Ok(());
+        };
+        if client.request_discriminators.is_empty() {
+            return Ok(());
+        }
+
+        let selected_ids: std::collections::HashSet<&str> = operations
+            .iter()
+            .map(|operation| operation.operation_id.as_str())
+            .collect();
+        let mut seen = std::collections::BTreeSet::new();
+
+        for (index, rule) in client.request_discriminators.iter().enumerate() {
+            let prefix = format!("client.request_discriminators[{index}]");
+            let resolution = crate::server::resolve_operation_selectors(
+                std::slice::from_ref(&rule.operation),
+                analysis,
+            )
+            .map_err(|error| {
+                crate::GeneratorError::ValidationError(format!(
+                    "{prefix}.operation `{}` did not resolve: {error}",
+                    rule.operation
+                ))
+            })?;
+            if resolution.operations.len() != 1 {
+                return Err(crate::GeneratorError::ValidationError(format!(
+                    "{prefix}.operation `{}` resolved to {} operations; request discriminators require exactly one source operation",
+                    rule.operation,
+                    resolution.operations.len(),
+                )));
+            }
+            let target = &resolution.operations[0];
+            if !selected_ids.contains(target.operation_id.as_str()) {
+                return Err(crate::GeneratorError::ValidationError(format!(
+                    "{prefix}.operation `{}` resolves to `{}`, which is not emitted by the configured client scope",
+                    rule.operation, target.operation_id,
+                )));
+            }
+            let operation = analysis
+                .operations
+                .get(&target.operation_id)
+                .ok_or_else(|| {
+                    crate::GeneratorError::ValidationError(format!(
+                        "{prefix}.operation resolved to missing analyzed operation `{}`",
+                        target.operation_id
+                    ))
+                })?;
+
+            let planned = self.plan_client_operation_methods(analysis, &[operation]);
+            let matches: Vec<_> = planned
+                .first()
+                .into_iter()
+                .flat_map(|plan| &plan.call_shapes)
+                .filter(|shape| {
+                    Self::request_discriminator_representation_matches(
+                        &shape.representation,
+                        rule.transport,
+                        &rule.media_type,
+                    )
+                })
+                .collect();
+            if matches.len() != 1 {
+                return Err(crate::GeneratorError::ValidationError(format!(
+                    "{prefix}: representation {:?} `{}` resolved to {} call shapes for `{}`; expected exactly one",
+                    rule.transport,
+                    rule.media_type,
+                    matches.len(),
+                    target.operation_id,
+                )));
+            }
+
+            if !operation.request_body_required {
+                return Err(crate::GeneratorError::ValidationError(format!(
+                    "{prefix}: operation `{}` has an optional request body; v1 request discriminators require a required typed request model",
+                    target.operation_id,
+                )));
+            }
+            let body_plan = self.body_model_plan(operation, analysis).ok_or_else(|| {
+                crate::GeneratorError::ValidationError(format!(
+                    "{prefix}: operation `{}` does not have a typed request model",
+                    target.operation_id,
+                ))
+            })?;
+            if body_plan.all_fields.is_empty() {
+                return Err(crate::GeneratorError::ValidationError(format!(
+                    "{prefix}: operation `{}` request body is not an assignable generated request model",
+                    target.operation_id,
+                )));
+            }
+            let fields: Vec<_> = body_plan
+                .all_fields
+                .iter()
+                .filter(|field| field.wire_name == rule.field)
+                .collect();
+            if fields.len() != 1 {
+                return Err(crate::GeneratorError::ValidationError(format!(
+                    "{prefix}.field `{}` resolved to {} emitted request fields for `{}`; expected exactly one wire-name match",
+                    rule.field,
+                    fields.len(),
+                    target.operation_id,
+                )));
+            }
+            let field = fields[0];
+            if !Self::request_discriminator_value_is_compatible(
+                &rule.value,
+                &field.schema_type,
+                analysis,
+                &mut std::collections::HashSet::new(),
+            ) {
+                return Err(crate::GeneratorError::ValidationError(format!(
+                    "{prefix}.value is incompatible with request field `{}` (Rust value type `{}`)",
+                    rule.field, field.value_type,
+                )));
+            }
+
+            let duplicate_key = (
+                target.operation_id.clone(),
+                rule.transport,
+                rule.media_type.to_ascii_lowercase(),
+                rule.field.clone(),
+            );
+            if !seen.insert(duplicate_key) {
+                return Err(crate::GeneratorError::ValidationError(format!(
+                    "{prefix}: duplicate request discriminator for operation `{}`, representation {:?} `{}`, field `{}`",
+                    target.operation_id, rule.transport, rule.media_type, rule.field,
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn request_discriminator_plans_for_shape(
+        &self,
+        analysis: &SchemaAnalysis,
+        operation: &OperationInfo,
+        representation: &ClientResponseRepresentation,
+    ) -> Vec<ClientRequestDiscriminatorPlan> {
+        let Some(client) = self.config().client.as_ref() else {
+            return Vec::new();
+        };
+        if !operation.request_body_required {
+            return Vec::new();
+        }
+        let Some(body_plan) = self.body_model_plan(operation, analysis) else {
+            return Vec::new();
+        };
+
+        let mut planned = Vec::new();
+        for rule in &client.request_discriminators {
+            if !Self::request_discriminator_representation_matches(
+                representation,
+                rule.transport,
+                &rule.media_type,
+            ) {
+                continue;
+            }
+            let Ok(resolution) = crate::server::resolve_operation_selectors(
+                std::slice::from_ref(&rule.operation),
+                analysis,
+            ) else {
+                continue;
+            };
+            if resolution.operations.len() != 1
+                || resolution.operations[0].operation_id != operation.operation_id
+            {
+                continue;
+            }
+            let mut fields = body_plan
+                .all_fields
+                .iter()
+                .filter(|field| field.wire_name == rule.field);
+            let Some(field) = fields.next() else {
+                continue;
+            };
+            if fields.next().is_some()
+                || !Self::request_discriminator_value_is_compatible(
+                    &rule.value,
+                    &field.schema_type,
+                    analysis,
+                    &mut std::collections::HashSet::new(),
+                )
+            {
+                continue;
+            }
+            planned.push(ClientRequestDiscriminatorPlan {
+                wire_name: field.wire_name.clone(),
+                rust_access_path: field.access_path.iter().map(ToString::to_string).collect(),
+                rust_value_type: field.value_type.to_string(),
+                value: rule.value.clone(),
+                field_required: field.is_required,
+                field_nullable: field.nullable,
+                field_tri_state: field.tri_state,
+            });
+        }
+        planned
+    }
+
+    fn request_discriminator_representation_matches(
+        representation: &ClientResponseRepresentation,
+        transport: RequestDiscriminatorTransport,
+        media_type: &str,
+    ) -> bool {
+        let (candidate_transport, candidate_media_type) = match representation {
+            ClientResponseRepresentation::Json { media_type, .. }
+            | ClientResponseRepresentation::Text { media_type }
+            | ClientResponseRepresentation::BinaryBuffered { media_type, .. } => (
+                RequestDiscriminatorTransport::Buffered,
+                Some(media_type.as_str()),
+            ),
+            ClientResponseRepresentation::EventStream { media_type } => (
+                RequestDiscriminatorTransport::EventStream,
+                Some(media_type.as_str()),
+            ),
+            ClientResponseRepresentation::BinaryStream { media_type, .. } => (
+                RequestDiscriminatorTransport::BinaryStream,
+                Some(media_type.as_str()),
+            ),
+            ClientResponseRepresentation::Empty => (RequestDiscriminatorTransport::Buffered, None),
+        };
+        candidate_transport == transport
+            && candidate_media_type
+                .is_some_and(|candidate| candidate.trim().eq_ignore_ascii_case(media_type.trim()))
+    }
+
+    fn request_discriminator_value_is_compatible(
+        value: &RequestDiscriminatorValue,
+        schema_type: &crate::analysis::SchemaType,
+        analysis: &SchemaAnalysis,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> bool {
+        use crate::analysis::SchemaType;
+        match schema_type {
+            SchemaType::Primitive { rust_type, .. } => match value {
+                RequestDiscriminatorValue::Bool(_) => rust_type == "bool",
+                RequestDiscriminatorValue::Integer(value) => match rust_type.as_str() {
+                    "i8" => i8::try_from(*value).is_ok(),
+                    "i16" => i16::try_from(*value).is_ok(),
+                    "i32" => i32::try_from(*value).is_ok(),
+                    "i64" => true,
+                    "u8" => u8::try_from(*value).is_ok(),
+                    "u16" => u16::try_from(*value).is_ok(),
+                    "u32" => u32::try_from(*value).is_ok(),
+                    "u64" => u64::try_from(*value).is_ok(),
+                    _ => false,
+                },
+                RequestDiscriminatorValue::String(_) => rust_type == "String" || rust_type == "str",
+            },
+            SchemaType::Reference { target } => {
+                if !visited.insert(target.clone()) {
+                    return false;
+                }
+                let compatible = analysis.schemas.get(target).is_some_and(|schema| {
+                    Self::request_discriminator_value_is_compatible(
+                        value,
+                        &schema.schema_type,
+                        analysis,
+                        visited,
+                    )
+                });
+                visited.remove(target);
+                compatible
+            }
+            SchemaType::Nullable { inner_type } => Self::request_discriminator_value_is_compatible(
+                value, inner_type, analysis, visited,
+            ),
+            SchemaType::StringEnum { values } => matches!(
+                value,
+                RequestDiscriminatorValue::String(value) if values.contains(value)
+            ),
+            SchemaType::ExtensibleEnum { .. } => {
+                matches!(value, RequestDiscriminatorValue::String(_))
+            }
+            _ => false,
         }
     }
 
@@ -1130,6 +1455,7 @@ impl CodeGenerator {
                 body_ident,
                 body_type,
                 required_construction,
+                all_fields: _,
                 optional_fields,
             } = body_plan;
             let can_initialize_optional_body =
@@ -1438,6 +1764,7 @@ impl CodeGenerator {
                     body_ident: format_ident!("body"),
                     body_type: quote! { Vec<u8> },
                     required_construction: RequiredBodyConstruction::Whole,
+                    all_fields: Vec::new(),
                     optional_fields: Vec::new(),
                 });
             }
@@ -1446,6 +1773,7 @@ impl CodeGenerator {
                     body_ident: format_ident!("body"),
                     body_type: quote! { String },
                     required_construction: RequiredBodyConstruction::Whole,
+                    all_fields: Vec::new(),
                     optional_fields: Vec::new(),
                 });
             }
@@ -1460,19 +1788,25 @@ impl CodeGenerator {
                 body_ident,
                 body_type: quote! { #body_type },
                 required_construction: RequiredBodyConstruction::Whole,
+                all_fields: Vec::new(),
                 optional_fields: Vec::new(),
             });
         };
 
-        let mut optional_fields = Vec::new();
+        let mut all_fields = Vec::new();
         let mut stack = std::collections::HashSet::new();
-        self.collect_optional_body_fields(
+        self.collect_body_fields(
             resolved_name,
             Vec::new(),
             analysis,
             &mut stack,
-            &mut optional_fields,
+            &mut all_fields,
         );
+        let optional_fields = all_fields
+            .iter()
+            .filter(|field| !field.is_required)
+            .cloned()
+            .collect();
 
         let required_construction = match &resolved_schema.schema_type {
             SchemaType::Object {
@@ -1513,6 +1847,7 @@ impl CodeGenerator {
             body_ident,
             body_type: quote! { #body_type },
             required_construction,
+            all_fields,
             optional_fields,
         })
     }
@@ -1537,7 +1872,7 @@ impl CodeGenerator {
         }
     }
 
-    fn collect_optional_body_fields(
+    fn collect_body_fields(
         &self,
         schema_name: &str,
         access_path: Vec<syn::Ident>,
@@ -1555,7 +1890,7 @@ impl CodeGenerator {
         };
         match &schema.schema_type {
             SchemaType::Reference { target } => {
-                self.collect_optional_body_fields(target, access_path, analysis, stack, output);
+                self.collect_body_fields(target, access_path, analysis, stack, output);
             }
             SchemaType::Object {
                 properties,
@@ -1570,9 +1905,6 @@ impl CodeGenerator {
                     additional_properties,
                     analysis,
                 ) {
-                    if field.is_required {
-                        continue;
-                    }
                     let mut field_path = access_path.clone();
                     field_path.push(field.ident.clone());
                     output.push(BodyFieldPlan {
@@ -1586,12 +1918,19 @@ impl CodeGenerator {
                             analysis,
                         ),
                         access_path: field_path,
+                        is_required: field.is_required,
+                        nullable: self.property_is_nullable(
+                            schema_name,
+                            field.wire_name,
+                            field.property,
+                        ),
                         tri_state: self.property_is_tri_state(
                             schema_name,
                             field.wire_name,
                             field.property,
                             field.is_required,
                         ),
+                        schema_type: field.property.schema_type.clone(),
                     });
                 }
             }
@@ -1599,7 +1938,7 @@ impl CodeGenerator {
                 for (index, schema_ref) in schemas.iter().enumerate() {
                     let mut nested_path = access_path.clone();
                     nested_path.push(format_ident!("part_{index}"));
-                    self.collect_optional_body_fields(
+                    self.collect_body_fields(
                         &schema_ref.target,
                         nested_path,
                         analysis,
@@ -1884,6 +2223,7 @@ impl CodeGenerator {
             request_param
         };
         let request_body = self.generate_request_body(op, analysis, with_multipart_filenames);
+        let request_discriminators = Self::generate_request_discriminator_assignments(call_shape);
         let query_params = self.generate_query_params(op);
         let header_params = self.generate_header_params(op);
         let cookie_params = self.generate_cookie_params(op);
@@ -1948,6 +2288,7 @@ impl CodeGenerator {
                 #url_construction
 
                 let mut req = #http_method_call;
+                #request_discriminators
                 #request_body
 
                 #query_params
@@ -1960,6 +2301,58 @@ impl CodeGenerator {
                 let response = req.send().await?;
                 #error_handling
             }
+        }
+    }
+
+    fn generate_request_discriminator_assignments(call_shape: &ClientCallShapePlan) -> TokenStream {
+        if call_shape.request_discriminators.is_empty() {
+            return TokenStream::new();
+        }
+
+        let assignments = call_shape.request_discriminators.iter().map(|plan| {
+            let value_type = match syn::parse_str::<syn::Type>(&plan.rust_value_type) {
+                Ok(value_type) => value_type,
+                Err(error) => return error.to_compile_error(),
+            };
+            let mut target = quote! { request };
+            for access in &plan.rust_access_path {
+                let access = match syn::parse_str::<syn::Ident>(access) {
+                    Ok(access) => access,
+                    Err(error) => return error.to_compile_error(),
+                };
+                target = quote! { #target.#access };
+            }
+            let value = match &plan.value {
+                RequestDiscriminatorValue::Bool(value) => {
+                    quote! { serde_json::Value::Bool(#value) }
+                }
+                RequestDiscriminatorValue::Integer(value) => {
+                    quote! { serde_json::Value::Number(serde_json::Number::from(#value)) }
+                }
+                RequestDiscriminatorValue::String(value) => {
+                    quote! { serde_json::Value::String(#value.to_string()) }
+                }
+            };
+            let assignment = if plan.field_tri_state {
+                quote! { #target = Some(Some(__request_discriminator_value)); }
+            } else if !plan.field_required || plan.field_nullable {
+                quote! { #target = Some(__request_discriminator_value); }
+            } else {
+                quote! { #target = __request_discriminator_value; }
+            };
+            quote! {
+                {
+                    let __request_discriminator_value: #value_type =
+                        serde_json::from_value(#value)
+                            .map_err(HttpError::serialization_error)?;
+                    #assignment
+                }
+            }
+        });
+
+        quote! {
+            let mut request = request;
+            #(#assignments)*
         }
     }
 

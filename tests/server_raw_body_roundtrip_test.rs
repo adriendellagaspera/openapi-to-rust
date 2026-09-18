@@ -330,6 +330,7 @@ fn storyden_generated_client_round_trips_raw_bodies_through_generated_server() {
         client: Some(ClientSection {
             operations: selected.clone(),
             prune_models: true,
+            request_discriminators: Vec::new(),
         }),
         server: Some(ServerSection {
             framework: "axum".into(),

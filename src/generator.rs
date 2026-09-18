@@ -1183,6 +1183,7 @@ impl CodeGenerator {
         analysis: &SchemaAnalysis,
         operations: &[&crate::analysis::OperationInfo],
     ) -> Result<String> {
+        self.validate_client_request_discriminators(analysis, operations)?;
         let provenance_attribute = self.provenance_attribute();
         let error_types = self.generate_http_error_types();
         let response_stream_type_alias =
@@ -1305,7 +1306,7 @@ impl CodeGenerator {
         })
     }
 
-    fn resolve_client_operation_ids(
+    pub(crate) fn resolve_client_operation_ids(
         &self,
         analysis: &SchemaAnalysis,
     ) -> Result<Option<std::collections::BTreeSet<String>>> {
@@ -1330,7 +1331,7 @@ impl CodeGenerator {
         }
     }
 
-    fn client_operations<'a>(
+    pub(crate) fn client_operations<'a>(
         &self,
         analysis: &'a SchemaAnalysis,
         selected: Option<&std::collections::BTreeSet<String>>,

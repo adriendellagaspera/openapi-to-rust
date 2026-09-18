@@ -380,6 +380,7 @@ fn openai_composition_body_gets_reachable_field_setters() {
         client: Some(ClientSection {
             operations: vec!["createResponse".into()],
             prune_models: true,
+            request_discriminators: Vec::new(),
         }),
         ..Default::default()
     });
