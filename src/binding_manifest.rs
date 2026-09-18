@@ -141,7 +141,12 @@ pub(crate) fn render_rust_type(tokens: proc_macro2::TokenStream) -> crate::Resul
 pub(crate) fn stream_abi(
     representation: &ClientResponseRepresentation,
 ) -> Option<BindingStreamAbi> {
-    representation.is_streaming().then(|| BindingStreamAbi {
+    matches!(
+        representation,
+        ClientResponseRepresentation::EventStream { .. }
+            | ClientResponseRepresentation::BinaryStream { .. }
+    )
+    .then(|| BindingStreamAbi {
         alias: "HttpResponseByteStream".to_string(),
         item_type: "bytes::Bytes".to_string(),
         error_type: "reqwest::Error".to_string(),
