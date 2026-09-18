@@ -367,7 +367,6 @@ fn manifest_preserves_exact_source_path_while_wire_path_is_normalized()
     let analysis = analyzer.analyze()?;
     let operation = &analysis.operations["fetch_widget_alias"];
     assert_eq!(operation.path, "/widgets/{widget_id}");
-    assert_eq!(operation.source_path, source_path);
 
     let generator = CodeGenerator::new(GeneratorConfig {
         enable_async_client: true,

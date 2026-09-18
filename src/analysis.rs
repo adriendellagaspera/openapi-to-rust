@@ -80,6 +80,11 @@ pub struct SchemaAnalysis {
     /// Rust-identifier-colliding IDs are renamed during analysis; retaining
     /// this mapping lets selector resolution report ambiguity or renaming.
     pub operation_id_aliases: BTreeMap<String, Vec<String>>,
+    /// Exact OpenAPI path key for each emitted operation ID.
+    ///
+    /// Generated HTTP routes may normalize fragment-like source discriminators,
+    /// but binding metadata must retain the original source identity.
+    pub operation_source_paths: BTreeMap<String, String>,
     /// Optional crates the [`TypeMapper`] was asked to reference
     /// during analysis (e.g. chrono when a `format: date-time` field
     /// became `chrono::DateTime<Utc>`). The generator reads this to
@@ -930,14 +935,8 @@ pub struct OperationInfo {
     pub operation_id: String,
     /// HTTP method (GET, POST, etc.)
     pub method: String,
-    /// Wire path template after generator path normalization.
+    /// Path template
     pub path: String,
-    /// Exact source path key from the OpenAPI document.
-    ///
-    /// This may retain a fragment-like discriminator used by source documents
-    /// to distinguish operations that share one wire route.
-    #[serde(skip)]
-    pub source_path: String,
     /// Short summary from OpenAPI spec
     pub summary: Option<String>,
     /// Longer description from OpenAPI spec
@@ -2168,6 +2167,7 @@ impl SchemaAnalyzer {
             operations: BTreeMap::new(),
             operation_responses: BTreeMap::new(),
             operation_id_aliases: BTreeMap::new(),
+            operation_source_paths: BTreeMap::new(),
             used_type_features: crate::type_mapping::UsedFeatures::default(),
             enum_extensions: BTreeMap::new(),
             validation_context,
@@ -7709,6 +7709,9 @@ impl SchemaAnalyzer {
                 .push(operation_id.clone());
             canonical_operation_ids.insert(Self::canonical_operation_id(&operation_id));
             analysis
+                .operation_source_paths
+                .insert(operation_id.clone(), path.to_string());
+            analysis
                 .operation_responses
                 .insert(operation_id.clone(), responses);
             analysis.operations.insert(operation_id, op_info);
@@ -7788,7 +7791,6 @@ impl SchemaAnalyzer {
             operation_id: operation_id.to_string(),
             method: method.to_uppercase(),
             path: normalize_operation_path(path),
-            source_path: path.to_string(),
             summary: operation.summary.clone(),
             description: operation.description.clone(),
             request_body: None,

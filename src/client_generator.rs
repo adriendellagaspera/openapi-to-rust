@@ -1311,7 +1311,11 @@ impl CodeGenerator {
         SourceOperationIdentity {
             operation_id,
             method: operation.method.clone(),
-            path: operation.source_path.clone(),
+            path: analysis
+                .operation_source_paths
+                .get(&operation.operation_id)
+                .cloned()
+                .unwrap_or_else(|| operation.path.clone()),
         }
     }
 
