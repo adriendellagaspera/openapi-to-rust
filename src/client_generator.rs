@@ -2103,7 +2103,7 @@ impl CodeGenerator {
                 let mut chosen = base.clone();
                 let mut suffix = 2;
                 while !used.insert(chosen.clone()) {
-                    chosen = format!("{base}_{suffix}");
+                    chosen = format!("{base}{suffix}");
                     suffix += 1;
                 }
                 chosen

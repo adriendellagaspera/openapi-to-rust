@@ -47,7 +47,7 @@ circleci/client.rs                                       617074    16000 f2ac0f4
 circleci/mod.rs                                             442       17 7a8b5691342a9d62
 circleci/types.rs                                        364570     9619 5dd0e36a1e3ca912
 cloudflare/REQUIRED_DEPS.toml                               787       19 09cccc57db93029b
-cloudflare/client.rs                                   13772948   360213 8cfb9e71073a66f6
+cloudflare/client.rs                                   13772946   360213 e290ee5680410103
 cloudflare/mod.rs                                           446       17 ce0e733f646147da
 cloudflare/types.rs                                    16273278   378321 231c0f88c435b00c
 coda/REQUIRED_DEPS.toml                                     672       16 9e666f39c7301c02
@@ -71,11 +71,11 @@ discord/client.rs                                       1081756    28252 d765e5e
 discord/mod.rs                                              440       17 1d9f7eee6c834b1c
 discord/types.rs                                        1272025    32755 de44694314113c14
 gcore/REQUIRED_DEPS.toml                                    746       17 7f467fcbfe949464
-gcore/client.rs                                         5162565   136236 97fe1a2aa9be26bc
+gcore/client.rs                                         5162461   136236 c24a1bb2aba79e4f
 gcore/mod.rs                                                436       17 d5c05d8821f23bcb
 gcore/types.rs                                          5862313   136588 532f95a64ec49f61
 github/REQUIRED_DEPS.toml                                   625       15 0e0871569054a9ee
-github/client.rs                                        5780349   146326 96417bf7f3c77c3b
+github/client.rs                                        5780347   146326 9badd66545a93aad
 github/mod.rs                                               438       17 ac4d40f51fb06aa3
 github/types.rs                                         7702391   207387 0019503f70f38bce
 gitpod/REQUIRED_DEPS.toml                                   736       18 21727a31b033ca36
@@ -207,7 +207,7 @@ supabase/client.rs                                       607215    16410 eda71e9
 supabase/mod.rs                                             442       17 331ec75d430bc0a8
 supabase/types.rs                                        476436    13390 306a5b647643e04d
 telnyx/REQUIRED_DEPS.toml                                   787       19 09cccc57db93029b
-telnyx/client.rs                                        5294573   139300 73291c5e40150a86
+telnyx/client.rs                                        5294493   139300 dfe03c79d68fb4b0
 telnyx/mod.rs                                               438       17 f3a44d93d532e621
 telnyx/types.rs                                         4496512   107989 7d19b35d8678c506
 terminal-shop/REQUIRED_DEPS.toml                            529       14 241dda1403a4b0ba
@@ -235,4 +235,4 @@ writer/client.rs                                         158348     4231 72f63bc
 writer/mod.rs                                               438       17 0435bf1552e493d1
 writer/types.rs                                          182479     4509 36b85cce121b9439
 #
-# specs: 56   files: 224   bytes: 317417662
+# specs: 56   files: 224   bytes: 317417474
