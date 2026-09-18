@@ -2044,33 +2044,6 @@ impl CodeGenerator {
         })
     }
 
-    pub(crate) fn parameter_enum_variant_names(&self, param: &ParameterInfo) -> Vec<String> {
-        let Some(values) = param.enum_values.as_deref() else {
-            return Vec::new();
-        };
-
-        let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
-        values
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
-                let base = param
-                    .enum_varnames
-                    .as_ref()
-                    .and_then(|names| names.get(index))
-                    .map(|name| self.to_rust_enum_variant(name))
-                    .unwrap_or_else(|| self.to_rust_enum_variant(value));
-                let mut chosen = base.clone();
-                let mut suffix = 2;
-                while !used.insert(chosen.clone()) {
-                    chosen = format!("{base}{suffix}");
-                    suffix += 1;
-                }
-                chosen
-            })
-            .collect()
-    }
-
     /// Emit inline enum types for parameters whose schema is `type: string`
     /// with `enum` or `const`. The generated enum implements `Display` so it
     /// drops into the existing `format!`-based path/query templating without
