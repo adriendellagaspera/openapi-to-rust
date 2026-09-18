@@ -259,7 +259,6 @@ pub fn run_generation_test(
             .as_ref()
             .and_then(|o| o.module_name.clone())
             .unwrap_or_else(|| "generated".to_string()),
-        emit_binding_manifest: false,
         enable_sse_client: test
             .config_overrides
             .as_ref()
