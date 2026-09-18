@@ -718,10 +718,11 @@ impl CodeGenerator {
                     "binding manifest type name collision for client parameter enum {name}"
                 )));
             }
-            let values = parameter
-                .enum_values
-                .as_deref()
-                .expect("parameter-enum map contains only inline enums");
+            let Some(values) = parameter.enum_values.as_deref() else {
+                return Err(GeneratorError::CodeGenError(format!(
+                    "parameter enum {name} lost its enum values while building binding metadata"
+                )));
+            };
             let variants = values
                 .iter()
                 .zip(self.parameter_enum_variant_names(parameter))
