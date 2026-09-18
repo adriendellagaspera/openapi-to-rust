@@ -1064,7 +1064,6 @@ impl ConfigFile {
             spec_path: self.generator.spec_path,
             output_dir: self.generator.output_dir,
             module_name: self.generator.module_name,
-            emit_binding_manifest: self.generator.binding_manifest,
             enable_sse_client: self.features.enable_sse_client,
             enable_async_client: self.features.enable_async_client,
             enable_specta: self.features.enable_specta,
