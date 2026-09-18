@@ -2,8 +2,8 @@ use openapi_to_rust::{CodeGenerator, GeneratorConfig, SchemaAnalyzer};
 use serde_json::json;
 
 #[test]
-fn multiline_property_descriptions_emit_one_doc_attribute_per_line(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn multiline_property_descriptions_emit_one_doc_attribute_per_line()
+-> Result<(), Box<dyn std::error::Error>> {
     let spec = json!({
         "openapi": "3.1.0",
         "info": {"title": "multiline property docs", "version": "1"},
