@@ -1247,3 +1247,4 @@ fn manifest_applies_client_scope_and_model_pruning_without_mutating_input()
     Ok(())
 }
 ''')
+\n# trigger one-shot workflow\n
