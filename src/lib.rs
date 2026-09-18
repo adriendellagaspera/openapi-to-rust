@@ -81,7 +81,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use analysis::{SchemaAnalysis, SchemaAnalyzer, merge_schema_extensions};
 pub use binding_manifest::{
-    BINDING_MANIFEST_FILE_NAME, BINDING_MANIFEST_SCHEMA_VERSION, BindingManifest,
+    BINDING_MANIFEST_FILE_NAME, BINDING_MANIFEST_SCHEMA, BINDING_MANIFEST_SCHEMA_VERSION,
+    BindingManifest,
 };
 pub use config::ConfigFile;
 pub use error::GeneratorError;
