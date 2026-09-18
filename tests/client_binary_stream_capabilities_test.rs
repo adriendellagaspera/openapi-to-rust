@@ -83,9 +83,8 @@ fn binary_success_keeps_buffered_method_and_adds_collision_safe_stream_method()
         client.contains("mod __http_response_byte_stream")
             && client.contains("pub type Type = futures_util::stream::BoxStream")
             && client.contains("pub type Type = futures_util::stream::LocalBoxStream")
-            && client.contains(
-                "pub type HttpResponseByteStream = __http_response_byte_stream::Type"
-            ),
+            && client
+                .contains("pub type HttpResponseByteStream = __http_response_byte_stream::Type"),
         "binary streaming must preserve the portable native/wasm ABI behind one public alias: {client}"
     );
     Ok(())
