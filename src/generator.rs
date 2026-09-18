@@ -445,6 +445,13 @@ impl CodeGenerator {
     /// Build deterministic generator-owned metadata for the Rust bindings
     /// represented by the supplied analyzed document.
     pub fn binding_manifest(&self, analysis: &SchemaAnalysis) -> Result<BindingManifest> {
+        if !self.config.enable_async_client || self.config.registry_only {
+            return Err(GeneratorError::ValidationError(
+                "binding manifest requires emitted model types and the async HTTP client"
+                    .to_string(),
+            ));
+        }
+
         let mut effective = analysis.clone();
         let scopes = self.resolve_operation_scopes(&effective)?;
         self.prune_models_to_scopes(&mut effective, &scopes);
