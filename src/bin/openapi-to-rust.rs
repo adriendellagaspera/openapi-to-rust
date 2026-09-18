@@ -43,7 +43,7 @@ enum Commands {
         #[arg(long, requires = "source")]
         types_only: bool,
         /// Direct mode: emit deterministic generator-owned binding metadata.
-        #[arg(long, requires = "source")]
+        #[arg(long, requires = "source", conflicts_with = "types_only")]
         binding_manifest: bool,
         /// Force every typed-scalar strategy back to "string" (Q2).
         /// Useful for bisecting regressions caused by typed-scalar
