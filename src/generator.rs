@@ -441,6 +441,37 @@ impl CodeGenerator {
         &self.config
     }
 
+    /// Compute parameter-enum variant names from the same normalization used by
+    /// client source rendering and binding metadata.
+    pub(crate) fn parameter_enum_variant_names(
+        &self,
+        param: &crate::analysis::ParameterInfo,
+    ) -> Vec<String> {
+        let Some(values) = param.enum_values.as_deref() else {
+            return Vec::new();
+        };
+        let mut used = std::collections::HashSet::new();
+        values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let base = param
+                    .enum_varnames
+                    .as_ref()
+                    .and_then(|names| names.get(index))
+                    .map(|name| self.to_rust_enum_variant(name))
+                    .unwrap_or_else(|| self.to_rust_enum_variant(value));
+                let mut chosen = base.clone();
+                let mut suffix = 2;
+                while !used.insert(chosen.clone()) {
+                    chosen = format!("{base}{suffix}");
+                    suffix += 1;
+                }
+                chosen
+            })
+            .collect()
+    }
+
     /// Build deterministic generator-owned metadata for the Rust bindings
     /// represented by the supplied analyzed document.
     pub fn binding_manifest(&self, analysis: &SchemaAnalysis) -> Result<BindingManifest> {
@@ -696,6 +727,43 @@ impl CodeGenerator {
                     symbol_paths.insert(rust_name.clone(), format!("types::{rust_name}"));
                 }
             }
+        }
+
+        // Inline string-enum parameters are emitted in client.rs rather than
+        // types.rs. Carry their definitions and generated-root-relative paths
+        // so every named type referenced by an operation signature is
+        // resolvable from the manifest without parsing generated Rust.
+        let mut parameter_enums = BTreeMap::new();
+        for operation in self.client_operations(analysis, scopes.client_ids.as_ref()) {
+            for parameter in &operation.parameters {
+                if parameter.enum_values.is_some() {
+                    parameter_enums
+                        .entry(parameter.rust_type.clone())
+                        .or_insert(parameter);
+                }
+            }
+        }
+        for (name, parameter) in parameter_enums {
+            if enums.contains_key(&name) || symbol_paths.contains_key(&name) {
+                return Err(GeneratorError::ValidationError(format!(
+                    "binding manifest type name collision for client parameter enum {name}"
+                )));
+            }
+            let values = parameter
+                .enum_values
+                .as_deref()
+                .expect("parameter-enum map contains only inline enums");
+            let variants = values
+                .iter()
+                .zip(self.parameter_enum_variant_names(parameter))
+                .map(|(wire_name, name)| BindingVariant {
+                    name,
+                    payload: None,
+                    wire_name: Some(wire_name.clone()),
+                })
+                .collect();
+            enums.insert(name.clone(), variants);
+            symbol_paths.insert(name.clone(), format!("client::{name}"));
         }
 
         let operations = if self.config.enable_async_client {
