@@ -930,8 +930,14 @@ pub struct OperationInfo {
     pub operation_id: String,
     /// HTTP method (GET, POST, etc.)
     pub method: String,
-    /// Path template
+    /// Wire path template after generator path normalization.
     pub path: String,
+    /// Exact source path key from the OpenAPI document.
+    ///
+    /// This may retain a fragment-like discriminator used by source documents
+    /// to distinguish operations that share one wire route.
+    #[serde(skip)]
+    pub source_path: String,
     /// Short summary from OpenAPI spec
     pub summary: Option<String>,
     /// Longer description from OpenAPI spec
@@ -7782,6 +7788,7 @@ impl SchemaAnalyzer {
             operation_id: operation_id.to_string(),
             method: method.to_uppercase(),
             path: normalize_operation_path(path),
+            source_path: path.to_string(),
             summary: operation.summary.clone(),
             description: operation.description.clone(),
             request_body: None,

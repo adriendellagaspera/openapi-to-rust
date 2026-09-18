@@ -324,6 +324,66 @@ fn manifest_carries_shared_model_and_operation_plans() -> Result<(), Box<dyn std
 }
 
 #[test]
+fn manifest_preserves_exact_source_path_while_wire_path_is_normalized()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source_path = "/widgets/{widget_id}#alternate";
+    let document = json!({
+        "openapi": "3.1.0",
+        "info": {"title": "Source path identity", "version": "1.0.0"},
+        "paths": {
+            source_path: {
+                "get": {
+                    "operationId": "fetch_widget_alias",
+                    "parameters": [{
+                        "name": "widget_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {"type": "string"}
+                    }],
+                    "responses": {
+                        "200": {
+                            "description": "ok",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/Widget"}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "components": {
+            "schemas": {
+                "Widget": {
+                    "type": "object",
+                    "required": ["id"],
+                    "properties": {"id": {"type": "string"}}
+                }
+            }
+        }
+    });
+    let mut analyzer = SchemaAnalyzer::new(document)?;
+    let analysis = analyzer.analyze()?;
+    let operation = &analysis.operations["fetch_widget_alias"];
+    assert_eq!(operation.path, "/widgets/{widget_id}");
+    assert_eq!(operation.source_path, source_path);
+
+    let generator = CodeGenerator::new(GeneratorConfig {
+        enable_async_client: true,
+        ..Default::default()
+    });
+    let manifest = generator.binding_manifest(&analysis)?;
+    let operation = manifest
+        .operations
+        .iter()
+        .find(|operation| operation.source_operation.operation_id == "fetch_widget_alias")
+        .expect("manifest operation");
+    assert_eq!(operation.source_operation.path, source_path);
+    Ok(())
+}
+
+#[test]
 fn manifest_api_is_additive_to_generation_result() -> Result<(), Box<dyn std::error::Error>> {
     let mut analyzer = SchemaAnalyzer::new(spec())?;
     let mut analysis = analyzer.analyze()?;
