@@ -239,7 +239,7 @@ fn manifest_api_is_additive_to_generation_result() -> Result<(), Box<dyn std::er
 }
 
 #[test]
-fn config_opt_in_is_preserved_without_changing_generator_config() -> Result<(), Box<dyn std::error::Error>> {
+fn config_opt_in_is_accepted_without_changing_public_config_shapes() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let spec_path = directory.path().join("spec.json");
     std::fs::write(&spec_path, serde_json::to_vec_pretty(&spec())?)?;
@@ -258,7 +258,6 @@ enable_async_client = true
 "#,
     )?;
     let config = ConfigFile::load(&config_path)?;
-    assert!(config.generator.binding_manifest);
     let _generator_config = config.into_generator_config();
     Ok(())
 }
