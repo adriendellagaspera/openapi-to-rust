@@ -1921,6 +1921,37 @@ impl CodeGenerator {
         })
     }
 
+    fn plan_extensible_enum_variants(
+        &self,
+        known_values: &[String],
+        ext: Option<&crate::analysis::EnumExtensions>,
+    ) -> Vec<(syn::Ident, String, Option<String>)> {
+        let varnames_override: Option<&Vec<String>> = ext
+            .filter(|_| self.config.types.x_enum_varnames_enabled())
+            .map(|extension| &extension.varnames)
+            .filter(|varnames| !varnames.is_empty() && varnames.len() == known_values.len());
+        let descriptions_override: Option<&Vec<String>> = ext
+            .filter(|_| self.config.types.x_enum_descriptions_enabled())
+            .map(|extension| &extension.descriptions)
+            .filter(|descriptions| {
+                !descriptions.is_empty() && descriptions.len() == known_values.len()
+            });
+
+        known_values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let name = match varnames_override {
+                    Some(varnames) => varnames[index].clone(),
+                    None => self.to_rust_enum_variant(value),
+                };
+                let description =
+                    descriptions_override.map(|descriptions| descriptions[index].clone());
+                (format_ident!("{}", name), value.clone(), description)
+            })
+            .collect()
+    }
+
     fn generate_extensible_enum(
         &self,
         schema: &crate::analysis::AnalyzedSchema,
@@ -1935,36 +1966,18 @@ impl CodeGenerator {
             TokenStream::new()
         };
 
-        // Q2.6: pre-resolve variant idents from x-enum-varnames when
-        // available + length-matched + toggle on. Same fallback rule
-        // as generate_string_enum.
-        let varnames_override: Option<&Vec<String>> = ext
-            .filter(|_| self.config.types.x_enum_varnames_enabled())
-            .map(|e| &e.varnames)
-            .filter(|v| !v.is_empty() && v.len() == known_values.len());
-        let descriptions_override: Option<&Vec<String>> = ext
-            .filter(|_| self.config.types.x_enum_descriptions_enabled())
-            .map(|e| &e.descriptions)
-            .filter(|v| !v.is_empty() && v.len() == known_values.len());
-
-        let variant_ident_for = |index: usize, value: &str| -> proc_macro2::Ident {
-            let name = match varnames_override {
-                Some(v) => v[index].clone(),
-                None => self.to_rust_enum_variant(value),
-            };
-            format_ident!("{}", name)
-        };
+        let variant_plans = self.plan_extensible_enum_variants(known_values, ext);
 
         // For extensible enums, we need a different approach:
         // 1. Create a regular enum with known variants + Custom
         // 2. Implement custom serialization/deserialization
 
-        let known_variants = known_values.iter().enumerate().map(|(i, value)| {
-            let variant_ident = variant_ident_for(i, value);
-            let doc = descriptions_override
-                .map(|d| {
-                    let s = self.sanitize_doc_comment(&d[i]);
-                    quote! { #[doc = #s] }
+        let known_variants = variant_plans.iter().map(|(variant_ident, _, description)| {
+            let doc = description
+                .as_ref()
+                .map(|description| {
+                    let sanitized = self.sanitize_doc_comment(description);
+                    quote! { #[doc = #sanitized] }
                 })
                 .unwrap_or_default();
             quote! {
@@ -1973,15 +1986,13 @@ impl CodeGenerator {
             }
         });
 
-        let match_arms_de = known_values.iter().enumerate().map(|(i, value)| {
-            let variant_ident = variant_ident_for(i, value);
+        let match_arms_de = variant_plans.iter().map(|(variant_ident, value, _)| {
             quote! {
                 #value => Ok(#enum_name::#variant_ident),
             }
         });
 
-        let match_arms_ser = known_values.iter().enumerate().map(|(i, value)| {
-            let variant_ident = variant_ident_for(i, value);
+        let match_arms_ser = variant_plans.iter().map(|(variant_ident, value, _)| {
             quote! {
                 #enum_name::#variant_ident => #value,
             }
