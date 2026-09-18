@@ -1,0 +1,40 @@
+name: Materialize binding manifest core
+on:
+  push:
+    branches: [gate-b-binding-manifest-v1]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Apply manifest core transformation
+        run: python .github/materializers/binding_manifest_core.py
+      - name: Remove one-shot materializer
+        run: |
+          rm -f .github/materializers/binding_manifest_core.py
+          rm -f .github/workflows/materialize-binding-manifest-core.yml
+      - name: Format
+        run: cargo fmt --all
+      - name: Focused tests
+        run: cargo test --test binding_manifest_test --test client_response_call_shapes_test --test client_request_discriminator_test --test selective_client_test
+      - name: Strict clippy
+        run: cargo clippy --all-features -- -D warnings
+      - name: Corpus tripwire
+        run: |
+          scripts/corpus-manifest.sh --write
+          git diff --exit-code -- tests/corpus-manifest.txt
+      - name: Commit core implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "feat: expose binding manifest v1"
+          git push origin HEAD:gate-b-binding-manifest-v1
