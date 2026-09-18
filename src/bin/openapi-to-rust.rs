@@ -399,49 +399,49 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
         overlay_output,
         emit_binding_manifest,
     ) = match args.source {
-            Some(source) => {
-                let config = GeneratorConfig {
-                    spec_path: PathBuf::from(&source),
-                    output_dir: args
-                        .output_dir
-                        .unwrap_or_else(|| PathBuf::from("src/generated")),
-                    module_name: args.module_name.unwrap_or_else(|| "api".to_string()),
-                    enable_async_client: !args.types_only,
-                    enable_sse_client: false,
-                    tracing_enabled: false,
-                    ..Default::default()
-                };
-                let provenance = sanitize_source_provenance(&source);
-                (
-                    config,
-                    source,
-                    provenance,
-                    Vec::new(),
-                    None,
-                    args.binding_manifest,
-                )
-            }
-            None => {
-                let config_path = args
-                    .config
-                    .unwrap_or_else(|| PathBuf::from("openapi-to-rust.toml"));
-                let raw_source = raw_config_spec_source(&config_path)?;
-                let emit_binding_manifest = raw_config_binding_manifest(&config_path)?;
-                let config_file = ConfigFile::load(&config_path)?;
-                let overlays = config_file.generator.overlays.clone();
-                let overlay_output = config_file.generator.overlay_output.clone();
-                let config = config_file.into_generator_config();
-                let load_source = config.spec_path.to_string_lossy().to_string();
-                (
-                    config,
-                    load_source,
-                    sanitize_source_provenance(&raw_source),
-                    overlays,
-                    overlay_output,
-                    emit_binding_manifest,
-                )
-            }
-        };
+        Some(source) => {
+            let config = GeneratorConfig {
+                spec_path: PathBuf::from(&source),
+                output_dir: args
+                    .output_dir
+                    .unwrap_or_else(|| PathBuf::from("src/generated")),
+                module_name: args.module_name.unwrap_or_else(|| "api".to_string()),
+                enable_async_client: !args.types_only,
+                enable_sse_client: false,
+                tracing_enabled: false,
+                ..Default::default()
+            };
+            let provenance = sanitize_source_provenance(&source);
+            (
+                config,
+                source,
+                provenance,
+                Vec::new(),
+                None,
+                args.binding_manifest,
+            )
+        }
+        None => {
+            let config_path = args
+                .config
+                .unwrap_or_else(|| PathBuf::from("openapi-to-rust.toml"));
+            let raw_source = raw_config_spec_source(&config_path)?;
+            let emit_binding_manifest = raw_config_binding_manifest(&config_path)?;
+            let config_file = ConfigFile::load(&config_path)?;
+            let overlays = config_file.generator.overlays.clone();
+            let overlay_output = config_file.generator.overlay_output.clone();
+            let config = config_file.into_generator_config();
+            let load_source = config.spec_path.to_string_lossy().to_string();
+            (
+                config,
+                load_source,
+                sanitize_source_provenance(&raw_source),
+                overlays,
+                overlay_output,
+                emit_binding_manifest,
+            )
+        }
+    };
     if args.types_conservative {
         generator_config.types = openapi_to_rust::TypeMappingConfig::conservative();
     }
@@ -551,9 +551,7 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn raw_config_binding_manifest(
-    path: &std::path::Path,
-) -> Result<bool, Box<dyn std::error::Error>> {
+fn raw_config_binding_manifest(path: &std::path::Path) -> Result<bool, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
     let value: toml::Value = toml::from_str(&content)?;
     Ok(value

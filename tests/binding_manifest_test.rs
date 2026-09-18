@@ -173,9 +173,11 @@ fn manifest_carries_shared_model_and_operation_plans() -> Result<(), Box<dyn std
         .filter(|operation| operation.source_operation.operation_id == "render")
         .collect::<Vec<_>>();
     assert_eq!(render.len(), 4, "{render:#?}");
-    assert!(render
-        .iter()
-        .all(|operation| operation.kind == BindingOperationKind::CallShape));
+    assert!(
+        render
+            .iter()
+            .all(|operation| operation.kind == BindingOperationKind::CallShape)
+    );
     assert!(render.iter().all(|operation| {
         operation.source_operation.method == "POST"
             && operation.source_operation.path == "/render/{item-id}"
@@ -183,7 +185,12 @@ fn manifest_carries_shared_model_and_operation_plans() -> Result<(), Box<dyn std
 
     let json = render
         .iter()
-        .find(|operation| matches!(operation.representation, ClientResponseRepresentation::Json { .. }))
+        .find(|operation| {
+            matches!(
+                operation.representation,
+                ClientResponseRepresentation::Json { .. }
+            )
+        })
         .expect("JSON operation");
     assert_eq!(
         json.parameters
@@ -281,7 +288,8 @@ fn manifest_api_is_additive_to_generation_result() -> Result<(), Box<dyn std::er
 }
 
 #[test]
-fn config_opt_in_is_accepted_without_changing_public_config_shapes() -> Result<(), Box<dyn std::error::Error>> {
+fn config_opt_in_is_accepted_without_changing_public_config_shapes()
+-> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let spec_path = directory.path().join("spec.json");
     std::fs::write(&spec_path, serde_json::to_vec_pretty(&spec())?)?;
@@ -303,7 +311,6 @@ enable_async_client = true
     let _generator_config = config.into_generator_config();
     Ok(())
 }
-
 
 #[test]
 fn manifest_honors_client_scope() -> Result<(), Box<dyn std::error::Error>> {

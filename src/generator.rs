@@ -2,9 +2,8 @@ use crate::{
     GeneratorError, Result,
     analysis::{SchemaAnalysis, SchemaType},
     binding_manifest::{
-        BINDING_MANIFEST_SCHEMA, BINDING_MANIFEST_SCHEMA_VERSION, BindingField,
-        BindingManifest, BindingManifestGenerator, BindingVariant, RawClientBinding,
-        render_rust_type,
+        BINDING_MANIFEST_SCHEMA, BINDING_MANIFEST_SCHEMA_VERSION, BindingField, BindingManifest,
+        BindingManifestGenerator, BindingVariant, RawClientBinding, render_rust_type,
     },
     streaming::StreamingConfig,
 };
@@ -594,12 +593,15 @@ impl CodeGenerator {
                 }
                 SchemaType::DiscriminatedUnion { variants, .. } => {
                     let has_nested_discriminated_union = variants.iter().any(|variant| {
-                        analysis.schemas.get(&variant.type_name).is_some_and(|schema| {
-                            matches!(
-                                &schema.schema_type,
-                                crate::analysis::SchemaType::DiscriminatedUnion { .. }
-                            )
-                        })
+                        analysis
+                            .schemas
+                            .get(&variant.type_name)
+                            .is_some_and(|schema| {
+                                matches!(
+                                    &schema.schema_type,
+                                    crate::analysis::SchemaType::DiscriminatedUnion { .. }
+                                )
+                            })
                     });
                     let manifest_variants = if self
                         .should_use_untagged_discriminated_union(schema, analysis)
@@ -662,18 +664,12 @@ impl CodeGenerator {
                 SchemaType::Reference { target } => {
                     if schema.name != *target {
                         let target = format_ident!("{}", self.to_rust_type_name(target));
-                        aliases.insert(
-                            rust_name.clone(),
-                            render_rust_type(quote! { #target })?,
-                        );
+                        aliases.insert(rust_name.clone(), render_rust_type(quote! { #target })?);
                         symbol_paths.insert(rust_name.clone(), format!("types::{rust_name}"));
                     }
                 }
                 SchemaType::Untyped { shape, .. } => {
-                    aliases.insert(
-                        rust_name.clone(),
-                        render_rust_type(untyped_tokens(*shape))?,
-                    );
+                    aliases.insert(rust_name.clone(), render_rust_type(untyped_tokens(*shape))?);
                     symbol_paths.insert(rust_name.clone(), format!("types::{rust_name}"));
                 }
                 SchemaType::Tuple { element_types } => {
@@ -2375,9 +2371,7 @@ impl CodeGenerator {
         let descriptions_override: Option<&Vec<String>> = ext
             .filter(|_| self.config.types.x_enum_descriptions_enabled())
             .map(|extension| &extension.descriptions)
-            .filter(|descriptions| {
-                !descriptions.is_empty() && descriptions.len() == values.len()
-            });
+            .filter(|descriptions| !descriptions.is_empty() && descriptions.len() == values.len());
 
         let mut used = std::collections::HashSet::new();
         values

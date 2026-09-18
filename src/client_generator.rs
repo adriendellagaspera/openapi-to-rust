@@ -780,9 +780,8 @@ impl CodeGenerator {
                     name: "multipart_filenames".to_string(),
                     type_name: render_rust_type(quote! { &[(&str, &str)] })?,
                 });
-                let return_type = render_rust_type(
-                    self.planned_return_type_tokens(plan.operation, base_shape),
-                )?;
+                let return_type =
+                    render_rust_type(self.planned_return_type_tokens(plan.operation, base_shape))?;
                 manifest_operations.push(BindingOperation {
                     kind: BindingOperationKind::MultipartFilenames,
                     source_operation: base_shape.source_operation.clone(),
