@@ -24,9 +24,7 @@ jobs:
       - name: Strict clippy
         run: cargo clippy --all-features -- -D warnings
       - name: Corpus tripwire
-        run: |
-          scripts/corpus-manifest.sh --write
-          git diff --exit-code -- tests/corpus-manifest.txt
+        run: scripts/corpus-manifest.sh --check
       - name: Remove one-shot validator
         run: rm -f .github/workflows/validate-binding-manifest-core.yml
       - name: Commit validated implementation
