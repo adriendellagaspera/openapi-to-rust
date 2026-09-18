@@ -28,9 +28,10 @@ fn multiline_property_descriptions_emit_one_doc_attribute_per_line()
     let generator = CodeGenerator::new(GeneratorConfig::default());
     let types = generator.generate(&mut analysis)?;
 
-    assert!(types.contains("#[doc = \"Randomize retry delay.\"]"));
-    assert!(types.contains("#[doc = \"Keeps synchronized clients apart.\"]"));
-    assert!(!types.contains("Randomize retry delay.\\nKeeps synchronized clients apart."));
+    assert!(types.contains(
+        "    ///Randomize retry delay.\n    ///Keeps synchronized clients apart.\n"
+    ));
+    assert!(!types.contains("/**Randomize retry delay."));
 
     Ok(())
 }
