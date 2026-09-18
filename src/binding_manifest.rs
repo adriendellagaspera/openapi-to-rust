@@ -35,7 +35,7 @@ pub struct BindingManifestGenerator {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BindingField {
     pub name: String,
-    pub wire_name: String,
+    pub wire_name: Option<String>,
     #[serde(rename = "type")]
     pub type_name: String,
 }
