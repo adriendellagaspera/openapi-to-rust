@@ -2588,7 +2588,8 @@ impl CodeGenerator {
 
                 let doc_comment = if let Some(desc) = &property.description {
                     let sanitized_desc = self.sanitize_doc_comment(desc);
-                    quote! { #[doc = #sanitized_desc] }
+                    let lines: Vec<_> = sanitized_desc.lines().collect();
+                    quote! { #(#[doc = #lines])* }
                 } else {
                     TokenStream::new()
                 };
