@@ -104,6 +104,33 @@ fn spec() -> serde_json::Value {
                     "properties": {
                         "id": {"$ref": "#/components/schemas/Identifier"}
                     }
+                },
+                "Cat": {
+                    "type": "object",
+                    "required": ["kind"],
+                    "properties": {
+                        "kind": {"type": "string", "enum": ["cat"]}
+                    }
+                },
+                "Dog": {
+                    "type": "object",
+                    "required": ["kind"],
+                    "properties": {
+                        "kind": {"type": "string", "enum": ["dog"]}
+                    }
+                },
+                "Animal": {
+                    "oneOf": [
+                        {"$ref": "#/components/schemas/Cat"},
+                        {"$ref": "#/components/schemas/Dog"}
+                    ],
+                    "discriminator": {
+                        "propertyName": "kind",
+                        "mapping": {
+                            "cat": "#/components/schemas/Cat",
+                            "dog": "#/components/schemas/Dog"
+                        }
+                    }
                 }
             }
         }
@@ -166,6 +193,13 @@ fn manifest_carries_shared_model_and_operation_plans() -> Result<(), Box<dyn std
     assert_eq!(mode[0].wire_name.as_deref(), Some("buffered-result"));
     assert_eq!(mode[1].name, "LiveEvents");
     assert_eq!(mode[1].wire_name.as_deref(), Some("live-events"));
+
+    let animal = &manifest.enums["Animal"];
+    let animal_wire_names = animal
+        .iter()
+        .filter_map(|variant| variant.wire_name.as_deref())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(animal_wire_names, std::collections::BTreeSet::from(["cat", "dog"]));
 
     let render = manifest
         .operations
