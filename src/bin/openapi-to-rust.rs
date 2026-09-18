@@ -426,10 +426,10 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
                     .config
                     .unwrap_or_else(|| PathBuf::from("openapi-to-rust.toml"));
                 let raw_source = raw_config_spec_source(&config_path)?;
+                let emit_binding_manifest = raw_config_binding_manifest(&config_path)?;
                 let config_file = ConfigFile::load(&config_path)?;
                 let overlays = config_file.generator.overlays.clone();
                 let overlay_output = config_file.generator.overlay_output.clone();
-                let emit_binding_manifest = config_file.generator.binding_manifest;
                 let config = config_file.into_generator_config();
                 let load_source = config.spec_path.to_string_lossy().to_string();
                 (
@@ -549,6 +549,18 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+fn raw_config_binding_manifest(
+    path: &std::path::Path,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let content = std::fs::read_to_string(path)?;
+    let value: toml::Value = toml::from_str(&content)?;
+    Ok(value
+        .get("generator")
+        .and_then(|generator| generator.get("binding_manifest"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false))
 }
 
 fn raw_config_spec_source(path: &std::path::Path) -> Result<String, Box<dyn std::error::Error>> {
