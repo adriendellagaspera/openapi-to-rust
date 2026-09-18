@@ -1,6 +1,10 @@
 use crate::{
     GeneratorError, Result,
     analysis::{SchemaAnalysis, SchemaType},
+    binding_manifest::{
+        BINDING_MANIFEST_SCHEMA_VERSION, BindingField, BindingManifest,
+        BindingManifestGenerator, BindingVariant, RawClientBinding, render_rust_type,
+    },
     streaming::StreamingConfig,
 };
 use proc_macro2::TokenStream;
@@ -435,6 +439,282 @@ impl CodeGenerator {
     /// Get reference to the generator configuration
     pub fn config(&self) -> &GeneratorConfig {
         &self.config
+    }
+
+    /// Build deterministic generator-owned metadata for the Rust bindings
+    /// represented by the supplied analyzed document.
+    pub fn binding_manifest(&self, analysis: &SchemaAnalysis) -> Result<BindingManifest> {
+        let mut structs = BTreeMap::new();
+        let mut enums = BTreeMap::new();
+        let mut aliases = BTreeMap::new();
+        let mut symbol_paths = BTreeMap::new();
+
+        for schema in analysis.schemas.values() {
+            let rust_name = self.to_rust_type_name(&schema.name);
+            match &schema.schema_type {
+                SchemaType::Object {
+                    properties,
+                    required,
+                    additional_properties,
+                    variant,
+                } => {
+                    let emitted = self.emitted_object_properties(
+                        &schema.name,
+                        properties,
+                        required,
+                        additional_properties,
+                        analysis,
+                    );
+                    let mut fields = Vec::new();
+                    for field in emitted {
+                        fields.push(BindingField {
+                            name: field.ident.to_string(),
+                            wire_name: Some(field.wire_name.to_string()),
+                            type_name: render_rust_type(field.field_type)?,
+                        });
+                    }
+                    match additional_properties {
+                        crate::analysis::ObjectAdditionalProperties::Denied
+                        | crate::analysis::ObjectAdditionalProperties::Closed => {}
+                        crate::analysis::ObjectAdditionalProperties::Untyped => {
+                            fields.push(BindingField {
+                                name: "additional_properties".to_string(),
+                                wire_name: None,
+                                type_name: "std::collections::BTreeMap<String, serde_json::Value>"
+                                    .to_string(),
+                            });
+                        }
+                        crate::analysis::ObjectAdditionalProperties::Typed { value_type } => {
+                            let value_type = self.generate_array_item_type(value_type, analysis);
+                            fields.push(BindingField {
+                                name: "additional_properties".to_string(),
+                                wire_name: None,
+                                type_name: render_rust_type(quote! {
+                                    std::collections::BTreeMap<String, #value_type>
+                                })?,
+                            });
+                        }
+                    }
+                    if let Some(variant) = variant {
+                        let field_name = self.variant_field_name(properties);
+                        let variant_type =
+                            format_ident!("{}", self.to_rust_type_name(&variant.target));
+                        fields.push(BindingField {
+                            name: field_name,
+                            wire_name: None,
+                            type_name: render_rust_type(quote! { #variant_type })?,
+                        });
+                    }
+                    structs.insert(rust_name.clone(), fields);
+                    symbol_paths.insert(rust_name.clone(), format!("types::{rust_name}"));
+                }
+                SchemaType::Composition { schemas } => {
+                    let mut fields = Vec::new();
+                    for (index, schema_ref) in schemas.iter().enumerate() {
+                        let field_type =
+                            format_ident!("{}", self.to_rust_type_name(&schema_ref.target));
+                        fields.push(BindingField {
+                            name: format!("part_{index}"),
+                            wire_name: None,
+                            type_name: render_rust_type(quote! { #field_type })?,
+                        });
+                    }
+                    structs.insert(rust_name.clone(), fields);
+                    symbol_paths.insert(rust_name.clone(), format!("types::{rust_name}"));
+                }
+                SchemaType::StringEnum { values } => {
+                    let extension = analysis.enum_extensions.get(&schema.name);
+                    let force_extensible = self
+                        .config
+                        .extensible_enum_overrides
+                        .get(&schema.name)
+                        .or_else(|| self.config.extensible_enum_overrides.get(&rust_name))
+                        .copied()
+                        .unwrap_or(false);
+                    let variants = if force_extensible {
+                        let mut variants = self
+                            .plan_extensible_enum_variants(values, extension)
+                            .into_iter()
+                            .map(|(name, wire_name, _)| BindingVariant {
+                                name: name.to_string(),
+                                payload: None,
+                                wire_name: Some(wire_name),
+                            })
+                            .collect::<Vec<_>>();
+                        variants.push(BindingVariant {
+                            name: "Custom".to_string(),
+                            payload: Some("String".to_string()),
+                            wire_name: None,
+                        });
+                        variants
+                    } else {
+                        self.plan_string_enum_variants(schema, values, extension)
+                            .into_iter()
+                            .map(|(name, wire_name, _, _)| BindingVariant {
+                                name: name.to_string(),
+                                payload: None,
+                                wire_name: Some(wire_name),
+                            })
+                            .collect()
+                    };
+                    enums.insert(rust_name.clone(), variants);
+                    symbol_paths.insert(rust_name.clone(), format!("types::{rust_name}"));
+                }
+                SchemaType::ExtensibleEnum { known_values } => {
+                    let extension = analysis.enum_extensions.get(&schema.name);
+                    let mut variants = self
+                        .plan_extensible_enum_variants(known_values, extension)
+                        .into_iter()
+                        .map(|(name, wire_name, _)| BindingVariant {
+                            name: name.to_string(),
+                            payload: None,
+                            wire_name: Some(wire_name),
+                        })
+                        .collect::<Vec<_>>();
+                    variants.push(BindingVariant {
+                        name: "Custom".to_string(),
+                        payload: Some("String".to_string()),
+                        wire_name: None,
+                    });
+                    enums.insert(rust_name.clone(), variants);
+                    symbol_paths.insert(rust_name.clone(), format!("types::{rust_name}"));
+                }
+                SchemaType::DiscriminatedUnion { variants, .. } => {
+                    let has_nested_discriminated_union = variants.iter().any(|variant| {
+                        analysis.schemas.get(&variant.type_name).is_some_and(|schema| {
+                            matches!(
+                                schema.schema_type,
+                                crate::analysis::SchemaType::DiscriminatedUnion { .. }
+                            )
+                        })
+                    });
+                    let manifest_variants = if self
+                        .should_use_untagged_discriminated_union(schema, analysis)
+                        || has_nested_discriminated_union
+                    {
+                        let refs = variants
+                            .iter()
+                            .map(|variant| crate::analysis::SchemaRef {
+                                target: variant.type_name.clone(),
+                                nullable: false,
+                            })
+                            .collect::<Vec<_>>();
+                        self.plan_union_enum_variants(schema, &refs, analysis)
+                            .into_iter()
+                            .map(|(name, payload)| {
+                                Ok(BindingVariant {
+                                    name: name.to_string(),
+                                    payload: Some(render_rust_type(payload)?),
+                                    wire_name: None,
+                                })
+                            })
+                            .collect::<Result<Vec<_>>>()?
+                    } else {
+                        self.plan_discriminated_enum_variants(schema, variants, analysis)
+                            .into_iter()
+                            .map(|(_, name, payload)| {
+                                Ok(BindingVariant {
+                                    name: name.to_string(),
+                                    payload: Some(render_rust_type(payload)?),
+                                    wire_name: None,
+                                })
+                            })
+                            .collect::<Result<Vec<_>>>()?
+                    };
+                    enums.insert(rust_name.clone(), manifest_variants);
+                    symbol_paths.insert(rust_name.clone(), format!("types::{rust_name}"));
+                }
+                SchemaType::Union { variants, .. } => {
+                    let manifest_variants = self
+                        .plan_union_enum_variants(schema, variants, analysis)
+                        .into_iter()
+                        .map(|(name, payload)| {
+                            Ok(BindingVariant {
+                                name: name.to_string(),
+                                payload: Some(render_rust_type(payload)?),
+                                wire_name: None,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    enums.insert(rust_name.clone(), manifest_variants);
+                    symbol_paths.insert(rust_name.clone(), format!("types::{rust_name}"));
+                }
+                SchemaType::Primitive { rust_type, .. } => {
+                    aliases.insert(
+                        rust_name.clone(),
+                        render_rust_type(parse_rust_type(rust_type)?)?,
+                    );
+                    symbol_paths.insert(rust_name.clone(), format!("types::{rust_name}"));
+                }
+                SchemaType::Reference { target } => {
+                    if schema.name != *target {
+                        let target = format_ident!("{}", self.to_rust_type_name(target));
+                        aliases.insert(
+                            rust_name.clone(),
+                            render_rust_type(quote! { #target })?,
+                        );
+                        symbol_paths.insert(rust_name.clone(), format!("types::{rust_name}"));
+                    }
+                }
+                SchemaType::Untyped { shape, .. } => {
+                    aliases.insert(
+                        rust_name.clone(),
+                        render_rust_type(untyped_tokens(*shape))?,
+                    );
+                    symbol_paths.insert(rust_name.clone(), format!("types::{rust_name}"));
+                }
+                SchemaType::Tuple { element_types } => {
+                    aliases.insert(
+                        rust_name.clone(),
+                        render_rust_type(self.generate_tuple_type(element_types, analysis))?,
+                    );
+                    symbol_paths.insert(rust_name.clone(), format!("types::{rust_name}"));
+                }
+                SchemaType::Array { item_type } => {
+                    let item_type = self.generate_array_item_type(item_type, analysis);
+                    aliases.insert(
+                        rust_name.clone(),
+                        render_rust_type(quote! { Vec<#item_type> })?,
+                    );
+                    symbol_paths.insert(rust_name.clone(), format!("types::{rust_name}"));
+                }
+                SchemaType::Nullable { inner_type } => {
+                    let inner_type = self.generate_array_item_type(inner_type, analysis);
+                    aliases.insert(
+                        rust_name.clone(),
+                        render_rust_type(quote! { Option<#inner_type> })?,
+                    );
+                    symbol_paths.insert(rust_name.clone(), format!("types::{rust_name}"));
+                }
+            }
+        }
+
+        let operations = if self.config.enable_async_client {
+            self.binding_manifest_operations(analysis)?
+        } else {
+            Vec::new()
+        };
+
+        Ok(BindingManifest {
+            schema_version: BINDING_MANIFEST_SCHEMA_VERSION,
+            generator: BindingManifestGenerator {
+                name: "openapi-to-rust",
+                version: env!("CARGO_PKG_VERSION"),
+            },
+            structs,
+            enums,
+            aliases,
+            symbol_paths,
+            operations,
+            raw_client: RawClientBinding::default(),
+        })
+    }
+
+    /// Serialize binding metadata with stable ordering and a trailing newline.
+    pub fn render_binding_manifest(&self, analysis: &SchemaAnalysis) -> Result<String> {
+        let mut rendered = serde_json::to_string_pretty(&self.binding_manifest(analysis)?)?;
+        rendered.push('\n');
+        Ok(rendered)
     }
 
     pub(crate) fn provenance_attribute(&self) -> TokenStream {
