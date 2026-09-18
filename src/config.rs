@@ -216,9 +216,6 @@ pub struct GeneratorSection {
     /// Additive operation-builder generation policy.
     #[serde(default)]
     pub builders: BuildersSection,
-    /// Emit deterministic generator-owned binding metadata next to generated Rust.
-    #[serde(default)]
-    pub binding_manifest: bool,
 }
 
 /// Configuration for additive `*_builder()` operation entry points.
@@ -538,8 +535,8 @@ struct GeneratorSectionWire {
     overlay_output: Option<PathBuf>,
     #[serde(default)]
     builders: BuildersSection,
-    #[serde(default)]
-    binding_manifest: bool,
+    #[serde(default, rename = "binding_manifest")]
+    _binding_manifest: bool,
     #[serde(default)]
     types: Option<crate::type_mapping::TypeMappingConfig>,
 }
@@ -568,7 +565,6 @@ impl TryFrom<ConfigFileWire> for ConfigFile {
                 overlays: wire.generator.overlays,
                 overlay_output: wire.generator.overlay_output,
                 builders: wire.generator.builders,
-                binding_manifest: wire.generator.binding_manifest,
             },
             features: wire.features,
             http_client: wire.http_client,
@@ -621,7 +617,6 @@ struct GeneratorSectionRef<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     overlay_output: Option<&'a PathBuf>,
     builders: &'a BuildersSection,
-    binding_manifest: bool,
     types: &'a crate::type_mapping::TypeMappingConfig,
 }
 
@@ -639,7 +634,6 @@ impl Serialize for ConfigFile {
                 overlays: &self.generator.overlays,
                 overlay_output: self.generator.overlay_output.as_ref(),
                 builders: &self.generator.builders,
-                binding_manifest: self.generator.binding_manifest,
                 types: &self.types,
             },
             features: &self.features,
