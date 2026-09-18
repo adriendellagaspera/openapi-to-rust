@@ -391,8 +391,14 @@ struct GenerationSummary {
 }
 
 fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let (mut generator_config, load_source, provenance, overlays, overlay_output) =
-        match args.source {
+    let (
+        mut generator_config,
+        load_source,
+        provenance,
+        overlays,
+        overlay_output,
+        emit_binding_manifest,
+    ) = match args.source {
             Some(source) => {
                 let config = GeneratorConfig {
                     spec_path: PathBuf::from(&source),
@@ -400,14 +406,20 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
                         .output_dir
                         .unwrap_or_else(|| PathBuf::from("src/generated")),
                     module_name: args.module_name.unwrap_or_else(|| "api".to_string()),
-                    emit_binding_manifest: args.binding_manifest,
                     enable_async_client: !args.types_only,
                     enable_sse_client: false,
                     tracing_enabled: false,
                     ..Default::default()
                 };
                 let provenance = sanitize_source_provenance(&source);
-                (config, source, provenance, Vec::new(), None)
+                (
+                    config,
+                    source,
+                    provenance,
+                    Vec::new(),
+                    None,
+                    args.binding_manifest,
+                )
             }
             None => {
                 let config_path = args
@@ -417,6 +429,7 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
                 let config_file = ConfigFile::load(&config_path)?;
                 let overlays = config_file.generator.overlays.clone();
                 let overlay_output = config_file.generator.overlay_output.clone();
+                let emit_binding_manifest = config_file.generator.binding_manifest;
                 let config = config_file.into_generator_config();
                 let load_source = config.spec_path.to_string_lossy().to_string();
                 (
@@ -425,6 +438,7 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
                     sanitize_source_provenance(&raw_source),
                     overlays,
                     overlay_output,
+                    emit_binding_manifest,
                 )
             }
         };
@@ -454,7 +468,13 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut analysis = analyzer.analyze()?;
     let generator = CodeGenerator::new(generator_config).with_source_provenance(provenance.clone());
     let result = generator.generate_all(&mut analysis)?;
-    let artifacts = generator.output_artifacts(&result);
+    let mut artifacts = generator.output_artifacts(&result);
+    if emit_binding_manifest {
+        artifacts.insert(
+            PathBuf::from(openapi_to_rust::BINDING_MANIFEST_FILE_NAME),
+            generator.render_binding_manifest(&analysis)?,
+        );
+    }
 
     let status = if args.check {
         if let (Some(path), Some(expected)) = (&overlay_output, &materialized) {
@@ -469,6 +489,9 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
             write_materialized(path, content)?;
         }
         write_artifacts(generator.config().output_dir.as_path(), &artifacts)?;
+        if !emit_binding_manifest {
+            remove_stale_binding_manifest(generator.config().output_dir.as_path())?;
+        }
         "generated"
     };
     let summary = GenerationSummary {
@@ -582,6 +605,17 @@ fn write_artifacts(
         std::fs::write(path, content)?;
     }
     Ok(())
+}
+
+fn remove_stale_binding_manifest(
+    output_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = output_dir.join(openapi_to_rust::BINDING_MANIFEST_FILE_NAME);
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn check_artifacts(
