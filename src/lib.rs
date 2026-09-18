@@ -45,6 +45,7 @@
 //! with [`CodeGenerator::write_files`].
 
 pub mod analysis;
+pub mod binding_manifest;
 #[cfg(feature = "cli")]
 pub mod cli;
 pub mod client_generator;
@@ -79,6 +80,10 @@ pub mod test_helpers;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use analysis::{SchemaAnalysis, SchemaAnalyzer, merge_schema_extensions};
+pub use binding_manifest::{
+    BINDING_MANIFEST_FILE_NAME, BINDING_MANIFEST_SCHEMA, BINDING_MANIFEST_SCHEMA_VERSION,
+    BindingManifest,
+};
 pub use config::ConfigFile;
 pub use error::GeneratorError;
 pub use generator::{CodeGenerator, GeneratedFile, GenerationResult, GeneratorConfig};
