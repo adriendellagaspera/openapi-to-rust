@@ -753,18 +753,9 @@ impl CodeGenerator {
                 });
             }
 
-            let op_error_type = self.op_error_type_token(plan.operation);
             for call_shape in &plan.call_shapes {
-                let success_type =
-                    syn::parse_str::<syn::Type>(&call_shape.success_type).map_err(|error| {
-                        crate::GeneratorError::CodeGenError(format!(
-                            "invalid planned success type `{}`: {error}",
-                            call_shape.success_type
-                        ))
-                    })?;
-                let return_type = render_rust_type(quote! {
-                    Result<#success_type, ApiOpError<#op_error_type>>
-                })?;
+                let return_type =
+                    render_rust_type(self.planned_return_type_tokens(plan.operation, call_shape))?;
                 manifest_operations.push(BindingOperation {
                     kind: BindingOperationKind::CallShape,
                     source_operation: call_shape.source_operation.clone(),
@@ -789,16 +780,9 @@ impl CodeGenerator {
                     name: "multipart_filenames".to_string(),
                     type_name: render_rust_type(quote! { &[(&str, &str)] })?,
                 });
-                let success_type =
-                    syn::parse_str::<syn::Type>(&base_shape.success_type).map_err(|error| {
-                        crate::GeneratorError::CodeGenError(format!(
-                            "invalid planned success type `{}`: {error}",
-                            base_shape.success_type
-                        ))
-                    })?;
-                let return_type = render_rust_type(quote! {
-                    Result<#success_type, ApiOpError<#op_error_type>>
-                })?;
+                let return_type = render_rust_type(
+                    self.planned_return_type_tokens(plan.operation, base_shape),
+                )?;
                 manifest_operations.push(BindingOperation {
                     kind: BindingOperationKind::MultipartFilenames,
                     source_operation: base_shape.source_operation.clone(),
@@ -2327,8 +2311,7 @@ impl CodeGenerator {
         let header_params = self.generate_header_params(op);
         let cookie_params = self.generate_cookie_params(op);
         let auth_application = self.generate_auth_application();
-        let response_type = Self::planned_success_type_tokens(call_shape);
-        let op_error_type = self.op_error_type_token(op);
+        let return_type = self.planned_return_type_tokens(op, call_shape);
         let accept = call_shape.representation.accept_media_type();
         let error_handling = self.generate_error_handling(
             op,
@@ -2383,7 +2366,7 @@ impl CodeGenerator {
             pub async fn #method_name(
                 &self,
                 #request_params
-            ) -> Result<#response_type, ApiOpError<#op_error_type>> {
+            ) -> #return_type {
                 #url_construction
 
                 let mut req = #http_method_call;
@@ -4104,6 +4087,16 @@ impl CodeGenerator {
             Ok(response_type) => quote! { #response_type },
             Err(error) => error.to_compile_error(),
         }
+    }
+
+    fn planned_return_type_tokens(
+        &self,
+        operation: &OperationInfo,
+        call_shape: &ClientCallShapePlan,
+    ) -> TokenStream {
+        let success_type = Self::planned_success_type_tokens(call_shape);
+        let op_error_type = self.op_error_type_token(operation);
+        quote! { Result<#success_type, ApiOpError<#op_error_type>> }
     }
 
     fn success_status_guard(statuses: &[String]) -> TokenStream {
