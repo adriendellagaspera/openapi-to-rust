@@ -2044,6 +2044,33 @@ impl CodeGenerator {
         })
     }
 
+    pub(crate) fn parameter_enum_variant_names(&self, param: &ParameterInfo) -> Vec<String> {
+        let Some(values) = param.enum_values.as_deref() else {
+            return Vec::new();
+        };
+
+        let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+        values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let base = param
+                    .enum_varnames
+                    .as_ref()
+                    .and_then(|names| names.get(index))
+                    .map(|name| self.to_rust_enum_variant(name))
+                    .unwrap_or_else(|| self.to_rust_enum_variant(value));
+                let mut chosen = base.clone();
+                let mut suffix = 2;
+                while !used.insert(chosen.clone()) {
+                    chosen = format!("{base}{suffix}");
+                    suffix += 1;
+                }
+                chosen
+            })
+            .collect()
+    }
+
     /// Emit inline enum types for parameters whose schema is `type: string`
     /// with `enum` or `const`. The generated enum implements `Display` so it
     /// drops into the existing `format!`-based path/query templating without
@@ -2077,38 +2104,9 @@ impl CodeGenerator {
 
         let enum_ident = format_ident!("{}", param.rust_type);
 
-        // Dedupe variant names. Real-world specs use sort enums like
-        // `["created_at", "-created_at"]` (descending prefix), and both
-        // PascalCase to `CreatedAt`. Suffix collisions with `_2`/`_3`/…
-        // while keeping each `serde(rename)` pointing at the original
-        // wire string.
-        let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
-        // `x-enum-varnames` wins over the naming heuristic when the spec
-        // supplies it — the whole point of the extension is that the author
-        // knows better than a transformation of the wire string. Schema-level
-        // enums already honored it; parameter enums did not, so the same spec
-        // produced different variant names depending on where its enum lived.
-        // Suffix disambiguation still applies, since nothing stops a spec from
-        // declaring two names that collide once converted to an identifier.
-        let variant_names: Vec<String> = values
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
-                let base = param
-                    .enum_varnames
-                    .as_ref()
-                    .and_then(|names| names.get(index))
-                    .map(|name| self.to_rust_enum_variant(name))
-                    .unwrap_or_else(|| self.to_rust_enum_variant(value));
-                let mut chosen = base.clone();
-                let mut suffix = 2;
-                while !used.insert(chosen.clone()) {
-                    chosen = format!("{base}{suffix}");
-                    suffix += 1;
-                }
-                chosen
-            })
-            .collect();
+        // Source rendering and binding metadata share this exact naming plan,
+        // including x-enum-varnames and deterministic collision suffixes.
+        let variant_names = self.parameter_enum_variant_names(param);
 
         let variants: Vec<TokenStream> = values
             .iter()
