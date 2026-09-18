@@ -80,13 +80,11 @@ fn binary_success_keeps_buffered_method_and_adds_collision_safe_stream_method()
         "streaming must expose exactly one public response-stream symbol: {client}"
     );
     assert!(
-        client.contains(
-            "type HttpResponseByteStreamPlatform = futures_util::stream::BoxStream"
-        ) && client.contains(
-            "type HttpResponseByteStreamPlatform = futures_util::stream::LocalBoxStream"
-        ) && client.contains(
-            "pub type HttpResponseByteStream = HttpResponseByteStreamPlatform"
-        ),
+        client.contains("type HttpResponseByteStreamPlatform = futures_util::stream::BoxStream")
+            && client.contains(
+                "type HttpResponseByteStreamPlatform = futures_util::stream::LocalBoxStream"
+            )
+            && client.contains("pub type HttpResponseByteStream = HttpResponseByteStreamPlatform"),
         "binary streaming must preserve the portable native/wasm ABI behind one public alias: {client}"
     );
     Ok(())
