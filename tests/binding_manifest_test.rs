@@ -259,10 +259,7 @@ fn manifest_carries_shared_model_and_operation_plans() -> Result<(), Box<dyn std
             .iter()
             .map(|variant| (variant.name.as_str(), variant.wire_name.as_deref()))
             .collect::<Vec<_>>(),
-        vec![
-            ("Created", Some("created")),
-            ("Created2", Some("-created")),
-        ]
+        vec![("Created", Some("created")), ("Created2", Some("-created")),]
     );
     assert_eq!(json.parameters[3].name, "request");
     assert_eq!(json.parameters[3].type_name, "RenderRequest");
