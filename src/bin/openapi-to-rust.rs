@@ -42,6 +42,9 @@ enum Commands {
         /// Direct mode: emit model types without an HTTP client.
         #[arg(long, requires = "source")]
         types_only: bool,
+        /// Direct mode: emit deterministic generator-owned binding metadata.
+        #[arg(long, requires = "source")]
+        binding_manifest: bool,
         /// Force every typed-scalar strategy back to "string" (Q2).
         /// Useful for bisecting regressions caused by typed-scalar
         /// adoption — overrides any `[generator.types]` settings in
@@ -212,6 +215,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             output_dir,
             module_name,
             types_only,
+            binding_manifest,
             types_conservative,
             dry_run,
             check,
@@ -224,6 +228,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             output_dir,
             module_name,
             types_only,
+            binding_manifest,
             types_conservative,
             dry_run,
             check,
@@ -284,6 +289,7 @@ struct GenerateArgs {
     output_dir: Option<PathBuf>,
     module_name: Option<String>,
     types_only: bool,
+    binding_manifest: bool,
     types_conservative: bool,
     dry_run: bool,
     check: bool,
@@ -394,6 +400,7 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
                         .output_dir
                         .unwrap_or_else(|| PathBuf::from("src/generated")),
                     module_name: args.module_name.unwrap_or_else(|| "api".to_string()),
+                    emit_binding_manifest: args.binding_manifest,
                     enable_async_client: !args.types_only,
                     enable_sse_client: false,
                     tracing_enabled: false,
