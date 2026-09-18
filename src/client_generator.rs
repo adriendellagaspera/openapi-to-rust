@@ -755,14 +755,13 @@ impl CodeGenerator {
 
             let op_error_type = self.op_error_type_token(plan.operation);
             for call_shape in &plan.call_shapes {
-                let success_type = syn::parse_str::<syn::Type>(&call_shape.success_type).map_err(
-                    |error| {
+                let success_type =
+                    syn::parse_str::<syn::Type>(&call_shape.success_type).map_err(|error| {
                         crate::GeneratorError::CodeGenError(format!(
                             "invalid planned success type `{}`: {error}",
                             call_shape.success_type
                         ))
-                    },
-                )?;
+                    })?;
                 let return_type = render_rust_type(quote! {
                     Result<#success_type, ApiOpError<#op_error_type>>
                 })?;
@@ -3364,18 +3363,18 @@ impl CodeGenerator {
             }
             RequestBodyContent::TextPlain { .. } => quote! { String },
             RequestBodyContent::Unsupported { .. } => quote! { Vec<u8> },
-            RequestBodyContent::SchemaLess { .. } => unreachable!(
-                "schema-less request bodies preserve the historical client signature"
-            ),
+            RequestBodyContent::SchemaLess { .. } => {
+                unreachable!("schema-less request bodies preserve the historical client signature")
+            }
         };
         let ident = match rb {
             RequestBodyContent::OctetStream { .. }
             | RequestBodyContent::Binary { .. }
             | RequestBodyContent::TextPlain { .. }
             | RequestBodyContent::Unsupported { .. } => Self::to_field_ident("body"),
-            RequestBodyContent::SchemaLess { .. } => unreachable!(
-                "schema-less request bodies preserve the historical client signature"
-            ),
+            RequestBodyContent::SchemaLess { .. } => {
+                unreachable!("schema-less request bodies preserve the historical client signature")
+            }
             _ => Self::to_field_ident("request"),
         };
         let rust_type = if op.request_body_required {
