@@ -385,53 +385,42 @@ struct GenerationSummary {
 }
 
 fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let (
-        mut generator_config,
-        load_source,
-        provenance,
-        overlays,
-        overlay_output,
-    ) = match args.source {
-        Some(source) => {
-            let config = GeneratorConfig {
-                spec_path: PathBuf::from(&source),
-                output_dir: args
-                    .output_dir
-                    .unwrap_or_else(|| PathBuf::from("src/generated")),
-                module_name: args.module_name.unwrap_or_else(|| "api".to_string()),
-                enable_async_client: !args.types_only,
-                enable_sse_client: false,
-                tracing_enabled: false,
-                ..Default::default()
-            };
-            let provenance = sanitize_source_provenance(&source);
-            (
-                config,
-                source,
-                provenance,
-                Vec::new(),
-                None,
-            )
-        }
-        None => {
-            let config_path = args
-                .config
-                .unwrap_or_else(|| PathBuf::from("openapi-to-rust.toml"));
-            let raw_source = raw_config_spec_source(&config_path)?;
-            let config_file = ConfigFile::load(&config_path)?;
-            let overlays = config_file.generator.overlays.clone();
-            let overlay_output = config_file.generator.overlay_output.clone();
-            let config = config_file.into_generator_config();
-            let load_source = config.spec_path.to_string_lossy().to_string();
-            (
-                config,
-                load_source,
-                sanitize_source_provenance(&raw_source),
-                overlays,
-                overlay_output,
-            )
-        }
-    };
+    let (mut generator_config, load_source, provenance, overlays, overlay_output) =
+        match args.source {
+            Some(source) => {
+                let config = GeneratorConfig {
+                    spec_path: PathBuf::from(&source),
+                    output_dir: args
+                        .output_dir
+                        .unwrap_or_else(|| PathBuf::from("src/generated")),
+                    module_name: args.module_name.unwrap_or_else(|| "api".to_string()),
+                    enable_async_client: !args.types_only,
+                    enable_sse_client: false,
+                    tracing_enabled: false,
+                    ..Default::default()
+                };
+                let provenance = sanitize_source_provenance(&source);
+                (config, source, provenance, Vec::new(), None)
+            }
+            None => {
+                let config_path = args
+                    .config
+                    .unwrap_or_else(|| PathBuf::from("openapi-to-rust.toml"));
+                let raw_source = raw_config_spec_source(&config_path)?;
+                let config_file = ConfigFile::load(&config_path)?;
+                let overlays = config_file.generator.overlays.clone();
+                let overlay_output = config_file.generator.overlay_output.clone();
+                let config = config_file.into_generator_config();
+                let load_source = config.spec_path.to_string_lossy().to_string();
+                (
+                    config,
+                    load_source,
+                    sanitize_source_provenance(&raw_source),
+                    overlays,
+                    overlay_output,
+                )
+            }
+        };
     if args.types_conservative {
         generator_config.types = openapi_to_rust::TypeMappingConfig::conservative();
     }
