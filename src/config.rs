@@ -535,8 +535,6 @@ struct GeneratorSectionWire {
     overlay_output: Option<PathBuf>,
     #[serde(default)]
     builders: BuildersSection,
-    #[serde(default, rename = "binding_manifest")]
-    _binding_manifest: bool,
     #[serde(default)]
     types: Option<crate::type_mapping::TypeMappingConfig>,
 }
