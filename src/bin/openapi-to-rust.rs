@@ -42,9 +42,6 @@ enum Commands {
         /// Direct mode: emit model types without an HTTP client.
         #[arg(long, requires = "source")]
         types_only: bool,
-        /// Direct mode: emit deterministic generator-owned binding metadata.
-        #[arg(long, requires = "source", conflicts_with = "types_only")]
-        binding_manifest: bool,
         /// Force every typed-scalar strategy back to "string" (Q2).
         /// Useful for bisecting regressions caused by typed-scalar
         /// adoption — overrides any `[generator.types]` settings in
@@ -215,7 +212,6 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             output_dir,
             module_name,
             types_only,
-            binding_manifest,
             types_conservative,
             dry_run,
             check,
@@ -228,7 +224,6 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             output_dir,
             module_name,
             types_only,
-            binding_manifest,
             types_conservative,
             dry_run,
             check,
@@ -289,7 +284,6 @@ struct GenerateArgs {
     output_dir: Option<PathBuf>,
     module_name: Option<String>,
     types_only: bool,
-    binding_manifest: bool,
     types_conservative: bool,
     dry_run: bool,
     check: bool,
@@ -397,7 +391,6 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
         provenance,
         overlays,
         overlay_output,
-        emit_binding_manifest,
     ) = match args.source {
         Some(source) => {
             let config = GeneratorConfig {
@@ -418,7 +411,6 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
                 provenance,
                 Vec::new(),
                 None,
-                args.binding_manifest,
             )
         }
         None => {
@@ -426,7 +418,6 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
                 .config
                 .unwrap_or_else(|| PathBuf::from("openapi-to-rust.toml"));
             let raw_source = raw_config_spec_source(&config_path)?;
-            let emit_binding_manifest = raw_config_binding_manifest(&config_path)?;
             let config_file = ConfigFile::load(&config_path)?;
             let overlays = config_file.generator.overlays.clone();
             let overlay_output = config_file.generator.overlay_output.clone();
@@ -438,7 +429,6 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
                 sanitize_source_provenance(&raw_source),
                 overlays,
                 overlay_output,
-                emit_binding_manifest,
             )
         }
     };
@@ -468,13 +458,7 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut analysis = analyzer.analyze()?;
     let generator = CodeGenerator::new(generator_config).with_source_provenance(provenance.clone());
     let result = generator.generate_all(&mut analysis)?;
-    let mut artifacts = generator.output_artifacts(&result);
-    if emit_binding_manifest {
-        artifacts.insert(
-            PathBuf::from(openapi_to_rust::BINDING_MANIFEST_FILE_NAME),
-            generator.render_binding_manifest(&analysis)?,
-        );
-    }
+    let artifacts = generator.output_artifacts(&result);
 
     let status = if args.check {
         if let (Some(path), Some(expected)) = (&overlay_output, &materialized) {
@@ -489,9 +473,6 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
             write_materialized(path, content)?;
         }
         write_artifacts(generator.config().output_dir.as_path(), &artifacts)?;
-        if !emit_binding_manifest {
-            remove_stale_binding_manifest(generator.config().output_dir.as_path())?;
-        }
         "generated"
     };
     let summary = GenerationSummary {
@@ -551,16 +532,6 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn raw_config_binding_manifest(path: &std::path::Path) -> Result<bool, Box<dyn std::error::Error>> {
-    let content = std::fs::read_to_string(path)?;
-    let value: toml::Value = toml::from_str(&content)?;
-    Ok(value
-        .get("generator")
-        .and_then(|generator| generator.get("binding_manifest"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(false))
-}
-
 fn raw_config_spec_source(path: &std::path::Path) -> Result<String, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
     let value: toml::Value = toml::from_str(&content)?;
@@ -615,17 +586,6 @@ fn write_artifacts(
         std::fs::write(path, content)?;
     }
     Ok(())
-}
-
-fn remove_stale_binding_manifest(
-    output_dir: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let path = output_dir.join(openapi_to_rust::BINDING_MANIFEST_FILE_NAME);
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
 }
 
 fn check_artifacts(
