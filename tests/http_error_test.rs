@@ -365,7 +365,6 @@ fn test_generated_error_code() {
         operations: BTreeMap::new(),
         operation_responses: BTreeMap::new(),
         operation_id_aliases: BTreeMap::new(),
-        operation_source_paths: BTreeMap::new(),
         used_type_features: Default::default(),
         enum_extensions: BTreeMap::new(),
         validation_context: Default::default(),

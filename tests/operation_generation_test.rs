@@ -29,7 +29,6 @@ fn create_test_analysis_with_operations(operations: Vec<OperationInfo>) -> Schem
             type_mappings: Default::default(),
         },
         operations: ops_map,
-        operation_source_paths: BTreeMap::new(),
         operation_responses: BTreeMap::new(),
         operation_id_aliases: BTreeMap::new(),
         used_type_features: Default::default(),

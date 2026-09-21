@@ -151,9 +151,6 @@ use crate::analysis::{
     OperationInfo, OperationResponseBody, OperationResponseRepresentation, ParameterInfo,
     SchemaAnalysis,
 };
-use crate::binding_manifest::{
-    BindingOperation, BindingOperationKind, BindingParameter, render_rust_type, stream_abi,
-};
 use crate::config::{RequestDiscriminatorTransport, RequestDiscriminatorValue};
 use crate::generator::CodeGenerator;
 use heck::{ToPascalCase, ToSnakeCase};
@@ -262,8 +259,9 @@ impl ClientResponseRepresentation {
 /// Stable OpenAPI identity for a generated operation.
 ///
 /// `operation_id` is the source document's operationId before the analyzer's
-/// collision-safe emitted-ID allocation. Method and path disambiguate duplicate
-/// or otherwise invalid real-world operationIds without depending on Rust names.
+/// collision-safe emitted-ID allocation. The `path` is the analyzed HTTP route,
+/// which may differ from the literal source OpenAPI key when route normalization
+/// occurs; consumers needing exact source paths must resolve them independently.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub struct SourceOperationIdentity {
     pub operation_id: String,
@@ -271,11 +269,6 @@ pub struct SourceOperationIdentity {
     pub path: String,
 }
 
-/// Shared pre-render plan for one generated client call shape.
-///
-/// Source rendering and generator-owned binding metadata consume this same
-/// object so naming, response representation and success-type decisions are
-/// made once.
 /// One validated request discriminator attached to the exact response
 /// representation it selects. The access path and Rust value type come from
 /// the same emitted request-model projection used by source rendering.
@@ -290,6 +283,8 @@ pub struct ClientRequestDiscriminatorPlan {
     pub field_tri_state: bool,
 }
 
+/// Shared pre-render plan used by ordinary client method generation and exposed
+/// for generic library callers. It does not require a producer binding manifest.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ClientCallShapePlan {
     pub source_operation: SourceOperationIdentity,
@@ -731,79 +726,6 @@ impl CodeGenerator {
             .into_iter()
             .flat_map(|plan| plan.call_shapes)
             .collect()
-    }
-
-    /// Build the operation portion of the generator-owned binding manifest
-    /// from the same call-shape and signature plans used by source rendering.
-    pub(crate) fn binding_manifest_operations(
-        &self,
-        analysis: &SchemaAnalysis,
-    ) -> crate::Result<Vec<BindingOperation>> {
-        let client_ids = self.resolve_client_operation_ids(analysis)?;
-        let operations = self.client_operations(analysis, client_ids.as_ref());
-        self.validate_client_request_discriminators(analysis, &operations)?;
-
-        let mut manifest_operations = Vec::new();
-        for plan in self.plan_client_operation_methods(analysis, &operations) {
-            let mut parameters = Vec::new();
-            for parameter in self.plan_request_params(plan.operation) {
-                parameters.push(BindingParameter {
-                    name: parameter.ident.to_string(),
-                    type_name: render_rust_type(parameter.rust_type)?,
-                });
-            }
-
-            for call_shape in &plan.call_shapes {
-                let return_type =
-                    render_rust_type(self.planned_return_type_tokens(plan.operation, call_shape))?;
-                manifest_operations.push(BindingOperation {
-                    kind: BindingOperationKind::CallShape,
-                    source_operation: call_shape.source_operation.clone(),
-                    emitted_operation_id: call_shape.emitted_operation_id.clone(),
-                    rust_method_name: call_shape.rust_method_name.clone(),
-                    parameters: parameters.clone(),
-                    return_type,
-                    success_type: call_shape.success_type.clone(),
-                    representation: call_shape.representation.clone(),
-                    success_statuses: call_shape.success_statuses.clone(),
-                    stream: stream_abi(&call_shape.representation),
-                    request_discriminators: call_shape.request_discriminators.clone(),
-                });
-            }
-
-            if let (Some(method_name), Some(base_shape)) = (
-                plan.multipart_filename_method_name.as_ref(),
-                plan.call_shapes.first(),
-            ) {
-                let mut helper_parameters = parameters.clone();
-                helper_parameters.push(BindingParameter {
-                    name: "multipart_filenames".to_string(),
-                    type_name: render_rust_type(quote! { &[(&str, &str)] })?,
-                });
-                let return_type =
-                    render_rust_type(self.planned_return_type_tokens(plan.operation, base_shape))?;
-                manifest_operations.push(BindingOperation {
-                    kind: BindingOperationKind::MultipartFilenames,
-                    source_operation: base_shape.source_operation.clone(),
-                    emitted_operation_id: base_shape.emitted_operation_id.clone(),
-                    rust_method_name: method_name.to_string(),
-                    parameters: helper_parameters,
-                    return_type,
-                    success_type: base_shape.success_type.clone(),
-                    representation: base_shape.representation.clone(),
-                    success_statuses: base_shape.success_statuses.clone(),
-                    stream: stream_abi(&base_shape.representation),
-                    request_discriminators: base_shape.request_discriminators.clone(),
-                });
-            }
-        }
-
-        manifest_operations.sort_by(|left, right| {
-            left.rust_method_name
-                .cmp(&right.rust_method_name)
-                .then_with(|| left.source_operation.cmp(&right.source_operation))
-        });
-        Ok(manifest_operations)
     }
 
     /// Fail-closed call-shape planning for consumers that need generator-owned
@@ -1311,11 +1233,7 @@ impl CodeGenerator {
         SourceOperationIdentity {
             operation_id,
             method: operation.method.clone(),
-            path: analysis
-                .operation_source_paths
-                .get(&operation.operation_id)
-                .cloned()
-                .unwrap_or_else(|| operation.path.clone()),
+            path: operation.path.clone(),
         }
     }
 
@@ -2108,8 +2026,8 @@ impl CodeGenerator {
 
         let enum_ident = format_ident!("{}", param.rust_type);
 
-        // Source rendering and binding metadata share this exact naming plan,
-        // including x-enum-varnames and deterministic collision suffixes.
+        // Use the same collision-stable naming plan for all rendered parameter
+        // enums, including x-enum-varnames overrides.
         let variant_names = self.parameter_enum_variant_names(param);
 
         let variants: Vec<TokenStream> = values
@@ -3295,10 +3213,9 @@ impl CodeGenerator {
 
     fn plan_request_params(&self, op: &OperationInfo) -> Vec<ClientMethodParameterPlan> {
         let mut params = Vec::new();
-        // This allocation is shared by source rendering and binding metadata.
         // Real-world specs may contain parameter names that sanitize to the
-        // same Rust identifier, so preserve the renderer's deterministic
-        // suffixing in the plan itself.
+        // same Rust identifier; allocate once so every renderer uses the same
+        // deterministic suffixing.
         let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut unique_param_ident = |raw: String| -> syn::Ident {
             let mut chosen = raw.clone();
