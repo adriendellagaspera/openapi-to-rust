@@ -259,8 +259,9 @@ impl ClientResponseRepresentation {
 /// Stable OpenAPI identity for a generated operation.
 ///
 /// `operation_id` is the source document's operationId before the analyzer's
-/// collision-safe emitted-ID allocation. Method and path disambiguate duplicate
-/// or otherwise invalid real-world operationIds without depending on Rust names.
+/// collision-safe emitted-ID allocation. The `path` is the analyzed HTTP route,
+/// which may differ from the literal source OpenAPI key when route normalization
+/// occurs; consumers needing exact source paths must resolve them independently.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub struct SourceOperationIdentity {
     pub operation_id: String,
@@ -268,11 +269,6 @@ pub struct SourceOperationIdentity {
     pub path: String,
 }
 
-/// Shared pre-render plan for one generated client call shape.
-///
-/// Source rendering and generator-owned binding metadata consume this same
-/// object so naming, response representation and success-type decisions are
-/// made once.
 /// One validated request discriminator attached to the exact response
 /// representation it selects. The access path and Rust value type come from
 /// the same emitted request-model projection used by source rendering.
@@ -287,6 +283,8 @@ pub struct ClientRequestDiscriminatorPlan {
     pub field_tri_state: bool,
 }
 
+/// Shared pre-render plan used by ordinary client method generation and exposed
+/// for generic library callers. It does not require a producer binding manifest.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ClientCallShapePlan {
     pub source_operation: SourceOperationIdentity,
@@ -2028,8 +2026,8 @@ impl CodeGenerator {
 
         let enum_ident = format_ident!("{}", param.rust_type);
 
-        // Source rendering and binding metadata share this exact naming plan,
-        // including x-enum-varnames and deterministic collision suffixes.
+        // Use the same collision-stable naming plan for all rendered parameter
+        // enums, including x-enum-varnames overrides.
         let variant_names = self.parameter_enum_variant_names(param);
 
         let variants: Vec<TokenStream> = values
@@ -3215,10 +3213,9 @@ impl CodeGenerator {
 
     fn plan_request_params(&self, op: &OperationInfo) -> Vec<ClientMethodParameterPlan> {
         let mut params = Vec::new();
-        // This allocation is shared by source rendering and binding metadata.
         // Real-world specs may contain parameter names that sanitize to the
-        // same Rust identifier, so preserve the renderer's deterministic
-        // suffixing in the plan itself.
+        // same Rust identifier; allocate once so every renderer uses the same
+        // deterministic suffixing.
         let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut unique_param_ident = |raw: String| -> syn::Ident {
             let mut chosen = raw.clone();
