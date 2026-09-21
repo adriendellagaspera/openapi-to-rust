@@ -151,9 +151,6 @@ use crate::analysis::{
     OperationInfo, OperationResponseBody, OperationResponseRepresentation, ParameterInfo,
     SchemaAnalysis,
 };
-use crate::binding_manifest::{
-    BindingOperation, BindingOperationKind, BindingParameter, render_rust_type, stream_abi,
-};
 use crate::config::{RequestDiscriminatorTransport, RequestDiscriminatorValue};
 use crate::generator::CodeGenerator;
 use heck::{ToPascalCase, ToSnakeCase};
@@ -731,79 +728,6 @@ impl CodeGenerator {
             .into_iter()
             .flat_map(|plan| plan.call_shapes)
             .collect()
-    }
-
-    /// Build the operation portion of the generator-owned binding manifest
-    /// from the same call-shape and signature plans used by source rendering.
-    pub(crate) fn binding_manifest_operations(
-        &self,
-        analysis: &SchemaAnalysis,
-    ) -> crate::Result<Vec<BindingOperation>> {
-        let client_ids = self.resolve_client_operation_ids(analysis)?;
-        let operations = self.client_operations(analysis, client_ids.as_ref());
-        self.validate_client_request_discriminators(analysis, &operations)?;
-
-        let mut manifest_operations = Vec::new();
-        for plan in self.plan_client_operation_methods(analysis, &operations) {
-            let mut parameters = Vec::new();
-            for parameter in self.plan_request_params(plan.operation) {
-                parameters.push(BindingParameter {
-                    name: parameter.ident.to_string(),
-                    type_name: render_rust_type(parameter.rust_type)?,
-                });
-            }
-
-            for call_shape in &plan.call_shapes {
-                let return_type =
-                    render_rust_type(self.planned_return_type_tokens(plan.operation, call_shape))?;
-                manifest_operations.push(BindingOperation {
-                    kind: BindingOperationKind::CallShape,
-                    source_operation: call_shape.source_operation.clone(),
-                    emitted_operation_id: call_shape.emitted_operation_id.clone(),
-                    rust_method_name: call_shape.rust_method_name.clone(),
-                    parameters: parameters.clone(),
-                    return_type,
-                    success_type: call_shape.success_type.clone(),
-                    representation: call_shape.representation.clone(),
-                    success_statuses: call_shape.success_statuses.clone(),
-                    stream: stream_abi(&call_shape.representation),
-                    request_discriminators: call_shape.request_discriminators.clone(),
-                });
-            }
-
-            if let (Some(method_name), Some(base_shape)) = (
-                plan.multipart_filename_method_name.as_ref(),
-                plan.call_shapes.first(),
-            ) {
-                let mut helper_parameters = parameters.clone();
-                helper_parameters.push(BindingParameter {
-                    name: "multipart_filenames".to_string(),
-                    type_name: render_rust_type(quote! { &[(&str, &str)] })?,
-                });
-                let return_type =
-                    render_rust_type(self.planned_return_type_tokens(plan.operation, base_shape))?;
-                manifest_operations.push(BindingOperation {
-                    kind: BindingOperationKind::MultipartFilenames,
-                    source_operation: base_shape.source_operation.clone(),
-                    emitted_operation_id: base_shape.emitted_operation_id.clone(),
-                    rust_method_name: method_name.to_string(),
-                    parameters: helper_parameters,
-                    return_type,
-                    success_type: base_shape.success_type.clone(),
-                    representation: base_shape.representation.clone(),
-                    success_statuses: base_shape.success_statuses.clone(),
-                    stream: stream_abi(&base_shape.representation),
-                    request_discriminators: base_shape.request_discriminators.clone(),
-                });
-            }
-        }
-
-        manifest_operations.sort_by(|left, right| {
-            left.rust_method_name
-                .cmp(&right.rust_method_name)
-                .then_with(|| left.source_operation.cmp(&right.source_operation))
-        });
-        Ok(manifest_operations)
     }
 
     /// Fail-closed call-shape planning for consumers that need generator-owned
