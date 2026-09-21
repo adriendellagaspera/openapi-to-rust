@@ -462,6 +462,7 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
             write_materialized(path, content)?;
         }
         write_artifacts(generator.config().output_dir.as_path(), &artifacts)?;
+        remove_legacy_binding_manifest(generator.config().output_dir.as_path())?;
         "generated"
     };
     let summary = GenerationSummary {
@@ -575,6 +576,20 @@ fn write_artifacts(
         std::fs::write(path, content)?;
     }
     Ok(())
+}
+
+// A previous version may have left an obsolete producer manifest in this
+// directory. Remove it on real generation so downstream readers cannot mistake
+// stale metadata for the ordinary Rust just emitted.
+fn remove_legacy_binding_manifest(
+    output_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = output_dir.join("binding-manifest.json");
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn check_artifacts(
