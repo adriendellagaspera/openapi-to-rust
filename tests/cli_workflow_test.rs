@@ -66,7 +66,13 @@ fn regeneration_removes_stale_legacy_binding_manifest_without_emitting_a_new_one
 
     let generated = run(
         temp.path(),
-        &["generate", "api.yaml", "--output-dir", "generated", "--quiet"],
+        &[
+            "generate",
+            "api.yaml",
+            "--output-dir",
+            "generated",
+            "--quiet",
+        ],
     );
     assert_success(&generated);
     assert!(!output.join("binding-manifest.json").exists());
