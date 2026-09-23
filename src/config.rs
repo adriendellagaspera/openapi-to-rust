@@ -322,6 +322,49 @@ pub struct ClientSection {
     /// operations plus any selected server operations.
     #[serde(default)]
     pub prune_models: bool,
+    /// Representation-specific request fields that the raw client owns.
+    ///
+    /// Rules bind by source operation selector + response representation and
+    /// OpenAPI wire field name. Generated Rust method names are intentionally
+    /// absent from this contract.
+    #[serde(default)]
+    pub request_discriminators: Vec<RequestDiscriminatorRule>,
+}
+
+/// Transport dimension used to select one response call shape for a request
+/// discriminator. Media type is configured separately so alternate buffered
+/// binary/text/JSON representations remain distinguishable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestDiscriminatorTransport {
+    Buffered,
+    EventStream,
+    BinaryStream,
+}
+
+/// Scalar request discriminator value. Floats are deliberately excluded from
+/// v1: request representation switches are expected to be discrete, and this
+/// keeps the generator-owned metadata fully `Eq` and deterministic.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum RequestDiscriminatorValue {
+    Bool(bool),
+    Integer(i64),
+    String(String),
+}
+
+/// One representation-specific request assignment owned by the raw client.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestDiscriminatorRule {
+    /// Exactly one source operation selector. Tags are accepted only when they
+    /// resolve to one operation.
+    pub operation: String,
+    pub transport: RequestDiscriminatorTransport,
+    pub media_type: String,
+    /// OpenAPI request-model wire field name, not a Rust identifier.
+    pub field: String,
+    pub value: RequestDiscriminatorValue,
 }
 
 impl ClientSection {
@@ -758,6 +801,18 @@ impl ConfigFile {
             for (index, selector) in client.operations.iter().enumerate() {
                 if let Err(error) = crate::server::Selector::parse(selector) {
                     errors.push(format!("client.operations[{index}]: {error}"));
+                }
+            }
+            for (index, rule) in client.request_discriminators.iter().enumerate() {
+                let prefix = format!("client.request_discriminators[{index}]");
+                if let Err(error) = crate::server::Selector::parse(&rule.operation) {
+                    errors.push(format!("{prefix}.operation: {error}"));
+                }
+                if rule.media_type.trim().is_empty() {
+                    errors.push(format!("{prefix}.media_type: must not be empty"));
+                }
+                if rule.field.trim().is_empty() {
+                    errors.push(format!("{prefix}.field: must not be empty"));
                 }
             }
         }
