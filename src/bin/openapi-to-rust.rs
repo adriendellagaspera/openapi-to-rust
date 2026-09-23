@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use openapi_to_rust::cli::load_spec;
+use openapi_to_rust::overlay::{apply_overlay_files, materialize_document};
 use openapi_to_rust::server::{
     OperationIndex, Selector,
     edit::Editor as ServerEditor,
@@ -384,38 +385,53 @@ struct GenerationSummary {
 }
 
 fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let (mut generator_config, load_source, provenance) = match args.source {
-        Some(source) => {
-            let config = GeneratorConfig {
-                spec_path: PathBuf::from(&source),
-                output_dir: args
-                    .output_dir
-                    .unwrap_or_else(|| PathBuf::from("src/generated")),
-                module_name: args.module_name.unwrap_or_else(|| "api".to_string()),
-                enable_async_client: !args.types_only,
-                enable_sse_client: false,
-                tracing_enabled: false,
-                ..Default::default()
-            };
-            let provenance = sanitize_source_provenance(&source);
-            (config, source, provenance)
-        }
-        None => {
-            let config_path = args
-                .config
-                .unwrap_or_else(|| PathBuf::from("openapi-to-rust.toml"));
-            let raw_source = raw_config_spec_source(&config_path)?;
-            let config = ConfigFile::load(&config_path)?.into_generator_config();
-            let load_source = config.spec_path.to_string_lossy().to_string();
-            (config, load_source, sanitize_source_provenance(&raw_source))
-        }
-    };
+    let (mut generator_config, load_source, provenance, overlays, overlay_output) =
+        match args.source {
+            Some(source) => {
+                let config = GeneratorConfig {
+                    spec_path: PathBuf::from(&source),
+                    output_dir: args
+                        .output_dir
+                        .unwrap_or_else(|| PathBuf::from("src/generated")),
+                    module_name: args.module_name.unwrap_or_else(|| "api".to_string()),
+                    enable_async_client: !args.types_only,
+                    enable_sse_client: false,
+                    tracing_enabled: false,
+                    ..Default::default()
+                };
+                let provenance = sanitize_source_provenance(&source);
+                (config, source, provenance, Vec::new(), None)
+            }
+            None => {
+                let config_path = args
+                    .config
+                    .unwrap_or_else(|| PathBuf::from("openapi-to-rust.toml"));
+                let raw_source = raw_config_spec_source(&config_path)?;
+                let config_file = ConfigFile::load(&config_path)?;
+                let overlays = config_file.generator.overlays.clone();
+                let overlay_output = config_file.generator.overlay_output.clone();
+                let config = config_file.into_generator_config();
+                let load_source = config.spec_path.to_string_lossy().to_string();
+                (
+                    config,
+                    load_source,
+                    sanitize_source_provenance(&raw_source),
+                    overlays,
+                    overlay_output,
+                )
+            }
+        };
     if args.types_conservative {
         generator_config.types = openapi_to_rust::TypeMappingConfig::conservative();
     }
 
     let spec_content = load_spec(&load_source)?;
-    let spec_value = parse_spec(&spec_content, &load_source)?;
+    let mut spec_value = parse_spec(&spec_content, &load_source)?;
+    apply_overlay_files(&mut spec_value, &overlays)?;
+    let materialized = overlay_output
+        .as_ref()
+        .map(|_| materialize_document(&spec_value))
+        .transpose()?;
     let warning = openapi_to_rust::spec_source::validate_oas_document(&spec_value)?;
     generator_config.apply_spec_server_default(&spec_value);
     let mapper = openapi_to_rust::TypeMapper::new(generator_config.types.clone());
@@ -434,11 +450,17 @@ fn run_generate(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
     let artifacts = generator.output_artifacts(&result);
 
     let status = if args.check {
+        if let (Some(path), Some(expected)) = (&overlay_output, &materialized) {
+            check_materialized(path, expected)?;
+        }
         check_artifacts(generator.config().output_dir.as_path(), &artifacts)?;
         "up-to-date"
     } else if args.dry_run {
         "dry-run"
     } else {
+        if let (Some(path), Some(content)) = (&overlay_output, &materialized) {
+            write_materialized(path, content)?;
+        }
         write_artifacts(generator.config().output_dir.as_path(), &artifacts)?;
         "generated"
     };
@@ -508,6 +530,37 @@ fn raw_config_spec_source(path: &std::path::Path) -> Result<String, Box<dyn std:
         .and_then(toml::Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| "configuration is missing generator.spec_path".into())
+}
+
+fn write_materialized(
+    path: &std::path::Path,
+    content: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
+fn check_materialized(
+    path: &std::path::Path,
+    expected: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match std::fs::read_to_string(path) {
+        Ok(actual) if actual == expected => Ok(()),
+        Ok(_) => Err(format!(
+            "materialized OpenAPI is stale: changed: {}\nRun generation again to update it.",
+            path.display()
+        )
+        .into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(format!(
+            "materialized OpenAPI is stale: missing: {}\nRun generation again to update it.",
+            path.display()
+        )
+        .into()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn write_artifacts(

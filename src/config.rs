@@ -205,6 +205,14 @@ pub struct GeneratorSection {
     /// Relative paths are resolved from the configuration file's directory.
     #[serde(default)]
     pub schema_extensions: Vec<PathBuf>,
+    /// OpenAPI Overlay 1.1 files applied in order before analysis/codegen.
+    /// Relative paths are resolved from the configuration file's directory.
+    #[serde(default)]
+    pub overlays: Vec<PathBuf>,
+    /// Deterministic JSON materialization of the overlaid OpenAPI document.
+    /// Relative paths are resolved from the configuration file's directory.
+    #[serde(default)]
+    pub overlay_output: Option<PathBuf>,
     /// Additive operation-builder generation policy.
     #[serde(default)]
     pub builders: BuildersSection,
@@ -479,6 +487,10 @@ struct GeneratorSectionWire {
     #[serde(default)]
     schema_extensions: Vec<PathBuf>,
     #[serde(default)]
+    overlays: Vec<PathBuf>,
+    #[serde(default)]
+    overlay_output: Option<PathBuf>,
+    #[serde(default)]
     builders: BuildersSection,
     #[serde(default)]
     types: Option<crate::type_mapping::TypeMappingConfig>,
@@ -505,6 +517,8 @@ impl TryFrom<ConfigFileWire> for ConfigFile {
                 output_dir: wire.generator.output_dir,
                 module_name: wire.generator.module_name,
                 schema_extensions: wire.generator.schema_extensions,
+                overlays: wire.generator.overlays,
+                overlay_output: wire.generator.overlay_output,
                 builders: wire.generator.builders,
             },
             features: wire.features,
@@ -554,6 +568,9 @@ struct GeneratorSectionRef<'a> {
     output_dir: &'a Path,
     module_name: &'a str,
     schema_extensions: &'a [PathBuf],
+    overlays: &'a [PathBuf],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    overlay_output: Option<&'a PathBuf>,
     builders: &'a BuildersSection,
     types: &'a crate::type_mapping::TypeMappingConfig,
 }
@@ -569,6 +586,8 @@ impl Serialize for ConfigFile {
                 output_dir: &self.generator.output_dir,
                 module_name: &self.generator.module_name,
                 schema_extensions: &self.generator.schema_extensions,
+                overlays: &self.generator.overlays,
+                overlay_output: self.generator.overlay_output.as_ref(),
                 builders: &self.generator.builders,
                 types: &self.types,
             },
@@ -620,8 +639,9 @@ fn inspect_type_config_layout(value: &toml::Value) -> Result<(), GeneratorError>
 impl ConfigFile {
     /// Load and validate configuration from a TOML file.
     ///
-    /// Relative `spec_path`, `output_dir`, and `schema_extensions` values are
-    /// resolved against the directory containing `path`, independent of the
+    /// Relative `spec_path`, `output_dir`, `schema_extensions`, `overlays`, and
+    /// `overlay_output` values are resolved against the directory containing
+    /// `path`, independent of the
     /// process's current working directory.
     pub fn load(path: &Path) -> Result<Self, GeneratorError> {
         let config_path = path.canonicalize().map_err(|e| GeneratorError::FileError {
@@ -666,6 +686,12 @@ impl ConfigFile {
         for extension in &mut config.generator.schema_extensions {
             resolve_relative_path(config_dir, extension);
         }
+        for overlay in &mut config.generator.overlays {
+            resolve_relative_path(config_dir, overlay);
+        }
+        if let Some(output) = &mut config.generator.overlay_output {
+            resolve_relative_path(config_dir, output);
+        }
 
         config.validate()?;
 
@@ -690,6 +716,30 @@ impl ConfigFile {
                 "generator.spec_path: OpenAPI spec file not found: {}. Ensure spec_path points to a valid OpenAPI JSON or YAML file.",
                 self.generator.spec_path.display()
             ));
+        }
+        for (index, overlay) in self.generator.overlays.iter().enumerate() {
+            if !overlay.is_file() {
+                errors.push(format!(
+                    "generator.overlays[{index}]: Overlay file not found: {}",
+                    overlay.display()
+                ));
+            }
+        }
+        if !self.generator.overlays.is_empty() && self.generator.overlay_output.is_none() {
+            errors.push(
+                "generator.overlay_output: required when generator.overlays is non-empty"
+                    .to_string(),
+            );
+        }
+        if self
+            .generator
+            .overlay_output
+            .as_ref()
+            .is_some_and(|output| output == &self.generator.spec_path)
+        {
+            errors.push(
+                "generator.overlay_output: must not overwrite generator.spec_path".to_string(),
+            );
         }
         if self.generator.module_name.is_empty() {
             errors.push("generator.module_name: module_name cannot be empty".to_string());
