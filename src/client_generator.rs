@@ -212,6 +212,14 @@ struct BodyModelPlan {
     optional_fields: Vec<BodyFieldPlan>,
 }
 
+#[derive(Clone)]
+struct ClientOperationMethodPlan<'a> {
+    operation: &'a OperationInfo,
+    method_name: syn::Ident,
+    multipart_filename_method_name: Option<syn::Ident>,
+}
+
+
 impl CodeGenerator {
     pub(crate) fn generate_http_response_stream_type_alias(
         &self,
@@ -567,10 +575,10 @@ impl CodeGenerator {
             .filter_map(|op| self.generate_op_error_enum(op))
             .collect();
 
-        let methods: Vec<TokenStream> = operations
+        let method_plans = self.plan_client_operation_methods(operations);
+        let methods: Vec<TokenStream> = method_plans
             .iter()
-            .copied()
-            .map(|op| self.generate_single_operation_method(analysis, op))
+            .map(|plan| self.generate_single_operation_method(analysis, plan))
             .collect();
 
         let (operation_builders, builder_entries) =
@@ -588,6 +596,38 @@ impl CodeGenerator {
                 #(#builder_entries)*
             }
         }
+    }
+
+    fn plan_client_operation_methods<'a>(
+        &self,
+        operations: &[&'a OperationInfo],
+    ) -> Vec<ClientOperationMethodPlan<'a>> {
+        let mut used_method_names: std::collections::HashSet<String> = operations
+            .iter()
+            .map(|operation| self.get_method_name(operation).to_string())
+            .collect();
+
+        operations
+            .iter()
+            .map(|operation| {
+                let operation = *operation;
+                let method_name = self.get_method_name(operation);
+                let multipart_filename_method_name = matches!(
+                    operation.request_body.as_ref(),
+                    Some(crate::analysis::RequestBodyContent::Multipart { .. })
+                )
+                .then(|| {
+                    let preferred = format!("{method_name}_with_multipart_filenames");
+                    let allocated = Self::allocate_name(&preferred, &mut used_method_names);
+                    Self::to_field_ident(&allocated)
+                });
+                ClientOperationMethodPlan {
+                    operation,
+                    method_name,
+                    multipart_filename_method_name,
+                }
+            })
+            .collect()
     }
 
     fn generate_operation_builders(
@@ -1446,17 +1486,58 @@ impl CodeGenerator {
         }
     }
 
-    /// Generate a single operation method
+    /// Generate a single operation method.
+    ///
+    /// Multipart operations also get an additive per-call filename variant so
+    /// callers can assign independent filenames without mutating client state.
     fn generate_single_operation_method(
         &self,
         analysis: &SchemaAnalysis,
-        op: &OperationInfo,
+        plan: &ClientOperationMethodPlan<'_>,
     ) -> TokenStream {
-        let method_name = self.get_method_name(op);
+        let op = plan.operation;
+        let base = self.generate_single_operation_method_variant(
+            analysis,
+            op,
+            plan.method_name.clone(),
+            false,
+        );
+        if let Some(filename_method) = &plan.multipart_filename_method_name {
+            let with_filenames = self.generate_single_operation_method_variant(
+                analysis,
+                op,
+                filename_method.clone(),
+                true,
+            );
+            quote! {
+                #base
+                #with_filenames
+            }
+        } else {
+            base
+        }
+    }
+
+    fn generate_single_operation_method_variant(
+        &self,
+        analysis: &SchemaAnalysis,
+        op: &OperationInfo,
+        method_name: syn::Ident,
+        with_multipart_filenames: bool,
+    ) -> TokenStream {
         let http_method_call = self.http_method_call(op);
         let path = &op.path;
         let request_param = self.generate_request_param(op);
-        let request_body = self.generate_request_body(op, analysis);
+        let request_params = if with_multipart_filenames {
+            if request_param.is_empty() {
+                quote! { multipart_filenames: &[(&str, &str)] }
+            } else {
+                quote! { #request_param, multipart_filenames: &[(&str, &str)] }
+            }
+        } else {
+            request_param
+        };
+        let request_body = self.generate_request_body(op, analysis, with_multipart_filenames);
         let query_params = self.generate_query_params(op);
         let header_params = self.generate_header_params(op);
         let cookie_params = self.generate_cookie_params(op);
@@ -1491,12 +1572,19 @@ impl CodeGenerator {
         };
         let url_construction = self.generate_url_construction(path, op);
         let doc_comment = self.generate_operation_doc_comment(op);
+        let filename_doc = with_multipart_filenames.then(|| {
+            quote! {
+                /// Override multipart filenames for binary fields by OpenAPI wire name.
+                /// Unspecified binary fields retain the base method's no-filename behavior.
+            }
+        });
 
         quote! {
             #doc_comment
+            #filename_doc
             pub async fn #method_name(
                 &self,
-                #request_param
+                #request_params
             ) -> Result<#response_type, ApiOpError<#op_error_type>> {
                 #url_construction
 
@@ -1506,16 +1594,8 @@ impl CodeGenerator {
                 #query_params
                 #header_params
                 #cookie_params
-
-                // Apply configured authentication (T3). Was previously
-                // hardcoded to bearer_auth regardless of GeneratorConfig.
                 #auth_application
-
-                // Add custom headers
                 #custom_headers
-
-                // Keep content negotiation aligned with the generated return type,
-                // replacing any custom Accept value for this operation.
                 #accept_header
 
                 let response = req.send().await?;
@@ -1523,7 +1603,6 @@ impl CodeGenerator {
             }
         }
     }
-
     /// T3: emit the auth-token application based on the configured AuthConfig.
     /// Default (no config) is Bearer on Authorization. ApiKey emits a custom
     /// header. Custom honors header_value_prefix.
@@ -2657,6 +2736,7 @@ impl CodeGenerator {
         schema_name: &str,
         validation_schema: &serde_json::Value,
         analysis: &SchemaAnalysis,
+        with_multipart_filenames: bool,
     ) -> TokenStream {
         use crate::analysis::{ObjectAdditionalProperties, SchemaType};
 
@@ -2754,6 +2834,18 @@ impl CodeGenerator {
                 };
             };
             let add_value = match kind {
+                MultipartClientFieldKind::RawBytes if with_multipart_filenames => quote! {
+                    let part = reqwest::multipart::Part::bytes(value.to_vec());
+                    let part = if let Some((_, filename)) = multipart_filenames
+                        .iter()
+                        .find(|(field, _)| *field == #wire_name)
+                    {
+                        part.file_name((*filename).to_string())
+                    } else {
+                        part
+                    };
+                    form = form.part(#wire_name, part);
+                },
                 MultipartClientFieldKind::RawBytes => quote! {
                     form = form.part(
                         #wire_name,
@@ -2824,7 +2916,12 @@ impl CodeGenerator {
     /// explicit zero-length framing for bodyless POST, PUT, and PATCH requests.
     /// Optional bodies (T11) gate the application on `Some(_)`; required bodies
     /// apply unconditionally.
-    fn generate_request_body(&self, op: &OperationInfo, analysis: &SchemaAnalysis) -> TokenStream {
+    fn generate_request_body(
+        &self,
+        op: &OperationInfo,
+        analysis: &SchemaAnalysis,
+        with_multipart_filenames: bool,
+    ) -> TokenStream {
         let empty_request_framing = Self::generate_empty_request_framing(op);
         let Some(rb) = op.request_body.as_ref() else {
             return empty_request_framing;
@@ -2854,7 +2951,12 @@ impl CodeGenerator {
                 ..
             } => (
                 quote! { request },
-                self.generate_typed_multipart_form(schema_name, validation_schema, analysis),
+                self.generate_typed_multipart_form(
+                    schema_name,
+                    validation_schema,
+                    analysis,
+                    with_multipart_filenames,
+                ),
             ),
             RequestBodyContent::OctetStream { media_type } => (
                 quote! { body },
