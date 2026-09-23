@@ -187,6 +187,12 @@ enum ClientSuccessBody<'a> {
     Empty,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClientResponseRepresentation {
+    Default,
+    BinaryStream,
+}
+
 #[derive(Clone)]
 struct ClientSuccessSelection<'a> {
     statuses: Vec<&'a str>,
@@ -217,8 +223,8 @@ struct ClientOperationMethodPlan<'a> {
     operation: &'a OperationInfo,
     method_name: syn::Ident,
     multipart_filename_method_name: Option<syn::Ident>,
+    binary_stream_method_name: Option<syn::Ident>,
 }
-
 
 impl CodeGenerator {
     pub(crate) fn generate_http_response_stream_type_alias(
@@ -226,13 +232,13 @@ impl CodeGenerator {
         analysis: &SchemaAnalysis,
         operations: &[&OperationInfo],
     ) -> TokenStream {
-        let has_event_stream = operations.iter().any(|operation| {
+        let has_streaming_response = operations.iter().any(|operation| {
             matches!(
                 self.get_success_response(analysis, operation).body,
-                ClientSuccessBody::EventStream
+                ClientSuccessBody::EventStream | ClientSuccessBody::Binary
             )
         });
-        if !has_event_stream {
+        if !has_streaming_response {
             return quote! {};
         }
 
@@ -575,7 +581,7 @@ impl CodeGenerator {
             .filter_map(|op| self.generate_op_error_enum(op))
             .collect();
 
-        let method_plans = self.plan_client_operation_methods(operations);
+        let method_plans = self.plan_client_operation_methods(analysis, operations);
         let methods: Vec<TokenStream> = method_plans
             .iter()
             .map(|plan| self.generate_single_operation_method(analysis, plan))
@@ -600,6 +606,7 @@ impl CodeGenerator {
 
     fn plan_client_operation_methods<'a>(
         &self,
+        analysis: &'a SchemaAnalysis,
         operations: &[&'a OperationInfo],
     ) -> Vec<ClientOperationMethodPlan<'a>> {
         let mut used_method_names: std::collections::HashSet<String> = operations
@@ -621,10 +628,20 @@ impl CodeGenerator {
                     let allocated = Self::allocate_name(&preferred, &mut used_method_names);
                     Self::to_field_ident(&allocated)
                 });
+                let binary_stream_method_name = matches!(
+                    self.get_success_response(analysis, operation).body,
+                    ClientSuccessBody::Binary
+                )
+                .then(|| {
+                    let preferred = format!("{method_name}_stream");
+                    let allocated = Self::allocate_name(&preferred, &mut used_method_names);
+                    Self::to_field_ident(&allocated)
+                });
                 ClientOperationMethodPlan {
                     operation,
                     method_name,
                     multipart_filename_method_name,
+                    binary_stream_method_name,
                 }
             })
             .collect()
@@ -1496,26 +1513,32 @@ impl CodeGenerator {
         plan: &ClientOperationMethodPlan<'_>,
     ) -> TokenStream {
         let op = plan.operation;
-        let base = self.generate_single_operation_method_variant(
+        let mut methods = vec![self.generate_single_operation_method_variant(
             analysis,
             op,
             plan.method_name.clone(),
             false,
-        );
+            ClientResponseRepresentation::Default,
+        )];
         if let Some(filename_method) = &plan.multipart_filename_method_name {
-            let with_filenames = self.generate_single_operation_method_variant(
+            methods.push(self.generate_single_operation_method_variant(
                 analysis,
                 op,
                 filename_method.clone(),
                 true,
-            );
-            quote! {
-                #base
-                #with_filenames
-            }
-        } else {
-            base
+                ClientResponseRepresentation::Default,
+            ));
         }
+        if let Some(binary_stream_method) = &plan.binary_stream_method_name {
+            methods.push(self.generate_single_operation_method_variant(
+                analysis,
+                op,
+                binary_stream_method.clone(),
+                false,
+                ClientResponseRepresentation::BinaryStream,
+            ));
+        }
+        quote! { #(#methods)* }
     }
 
     fn generate_single_operation_method_variant(
@@ -1524,6 +1547,7 @@ impl CodeGenerator {
         op: &OperationInfo,
         method_name: syn::Ident,
         with_multipart_filenames: bool,
+        response_representation: ClientResponseRepresentation,
     ) -> TokenStream {
         let http_method_call = self.http_method_call(op);
         let path = &op.path;
@@ -1543,10 +1567,13 @@ impl CodeGenerator {
         let cookie_params = self.generate_cookie_params(op);
         let auth_application = self.generate_auth_application();
         let success = self.get_success_response(analysis, op);
-        let response_type = self.get_response_type(analysis, op);
+        let response_type = match response_representation {
+            ClientResponseRepresentation::Default => self.get_response_type(analysis, op),
+            ClientResponseRepresentation::BinaryStream => quote! { HttpResponseByteStream },
+        };
         let op_error_type = self.op_error_type_token(op);
         let accept = success.accept;
-        let error_handling = self.generate_error_handling(op, success);
+        let error_handling = self.generate_error_handling(op, success, response_representation);
         let (custom_headers, accept_header) = if let Some(media_type) = accept {
             (
                 quote! {
@@ -1578,10 +1605,20 @@ impl CodeGenerator {
                 /// Unspecified binary fields retain the base method's no-filename behavior.
             }
         });
+        let representation_doc = matches!(
+            response_representation,
+            ClientResponseRepresentation::BinaryStream
+        )
+        .then(|| {
+            quote! {
+                /// Stream the successful binary response body without buffering it.
+            }
+        });
 
         quote! {
             #doc_comment
             #filename_doc
+            #representation_doc
             pub async fn #method_name(
                 &self,
                 #request_params
@@ -3270,6 +3307,7 @@ impl CodeGenerator {
         &self,
         op: &OperationInfo,
         success: ClientSuccessSelection<'_>,
+        response_representation: ClientResponseRepresentation,
     ) -> TokenStream {
         let op_error_type = self.op_error_type_token(op);
         let success_body = success.body;
@@ -3313,10 +3351,21 @@ impl CodeGenerator {
         let error_match_arms = self.generate_error_match_arms(op);
 
         // Streaming success path: hand back the live byte stream instead of
-        // buffering it. Reading an SSE body to a string blocks until the server
-        // closes the connection, which is precisely what it will not do.
-        // The error path still buffers — an error response is finite.
-        if matches!(success_body, ClientSuccessBody::EventStream) {
+        // buffering it. SSE is intrinsically streaming; binary responses expose
+        // this as an additive representation while retaining their buffered method.
+        // The error path still buffers — an error response is finite and bounded.
+        let streams_success = matches!(success_body, ClientSuccessBody::EventStream)
+            || matches!(
+                response_representation,
+                ClientResponseRepresentation::BinaryStream
+            );
+        debug_assert!(
+            !matches!(
+                response_representation,
+                ClientResponseRepresentation::BinaryStream
+            ) || matches!(success_body, ClientSuccessBody::Binary)
+        );
+        if streams_success {
             return quote! {
                 let status = response.status();
                 let status_code = status.as_u16();
