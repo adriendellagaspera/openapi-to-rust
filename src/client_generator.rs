@@ -147,7 +147,10 @@
 //! 5. Handles query parameters and request bodies
 //! 6. Configures middleware stack based on generator config
 
-use crate::analysis::{OperationInfo, OperationResponseBody, ParameterInfo, SchemaAnalysis};
+use crate::analysis::{
+    OperationInfo, OperationResponseBody, OperationResponseRepresentation, ParameterInfo,
+    SchemaAnalysis,
+};
 use crate::generator::CodeGenerator;
 use heck::{ToPascalCase, ToSnakeCase};
 use proc_macro2::TokenStream;
@@ -187,17 +190,99 @@ enum ClientSuccessBody<'a> {
     Empty,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ClientResponseRepresentation {
-    Default,
-    BinaryStream,
+/// Semantic identity of one generated response call shape.
+///
+/// The generated Rust method name is deliberately stored separately on
+/// [`ClientCallShapePlan`]. Consumers must use this identity rather than infer
+/// transport semantics from method suffixes.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ClientResponseRepresentation {
+    Json {
+        schema_name: String,
+        media_type: String,
+    },
+    Text {
+        media_type: String,
+    },
+    BinaryBuffered {
+        media_type: String,
+        wildcard: bool,
+    },
+    EventStream {
+        media_type: String,
+    },
+    BinaryStream {
+        media_type: String,
+        wildcard: bool,
+    },
+    Empty,
+}
+
+impl ClientResponseRepresentation {
+    fn success_body(&self) -> ClientSuccessBody<'_> {
+        match self {
+            Self::Json { schema_name, .. } => ClientSuccessBody::Json(schema_name),
+            Self::Text { .. } => ClientSuccessBody::Text,
+            Self::BinaryBuffered { .. } | Self::BinaryStream { .. } => ClientSuccessBody::Binary,
+            Self::EventStream { .. } => ClientSuccessBody::EventStream,
+            Self::Empty => ClientSuccessBody::Empty,
+        }
+    }
+
+    fn accept_media_type(&self) -> Option<&str> {
+        match self {
+            Self::Json { media_type, .. }
+            | Self::Text { media_type }
+            | Self::EventStream { media_type } => Some(media_type),
+            Self::BinaryBuffered {
+                media_type,
+                wildcard,
+            }
+            | Self::BinaryStream {
+                media_type,
+                wildcard,
+            } => (!wildcard).then_some(media_type.as_str()),
+            Self::Empty => None,
+        }
+    }
+
+    fn is_streaming(&self) -> bool {
+        matches!(self, Self::EventStream { .. } | Self::BinaryStream { .. })
+    }
+}
+
+/// Stable OpenAPI identity for a generated operation.
+///
+/// `operation_id` is the source document's operationId before the analyzer's
+/// collision-safe emitted-ID allocation. Method and path disambiguate duplicate
+/// or otherwise invalid real-world operationIds without depending on Rust names.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+pub struct SourceOperationIdentity {
+    pub operation_id: String,
+    pub method: String,
+    pub path: String,
+}
+
+/// Shared pre-render plan for one generated client call shape.
+///
+/// Source rendering and generator-owned binding metadata consume this same
+/// object so naming, response representation and success-type decisions are
+/// made once.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ClientCallShapePlan {
+    pub source_operation: SourceOperationIdentity,
+    pub emitted_operation_id: String,
+    pub rust_method_name: String,
+    pub representation: ClientResponseRepresentation,
+    pub success_statuses: Vec<String>,
+    pub success_type: String,
 }
 
 #[derive(Clone)]
-struct ClientSuccessSelection<'a> {
-    statuses: Vec<&'a str>,
-    body: ClientSuccessBody<'a>,
-    accept: Option<&'a str>,
+struct ClientSuccessSelection {
+    statuses: Vec<String>,
+    representation: ClientResponseRepresentation,
 }
 
 enum RequiredBodyConstruction {
@@ -221,9 +306,8 @@ struct BodyModelPlan {
 #[derive(Clone)]
 struct ClientOperationMethodPlan<'a> {
     operation: &'a OperationInfo,
-    method_name: syn::Ident,
+    call_shapes: Vec<ClientCallShapePlan>,
     multipart_filename_method_name: Option<syn::Ident>,
-    binary_stream_method_name: Option<syn::Ident>,
 }
 
 impl CodeGenerator {
@@ -232,12 +316,11 @@ impl CodeGenerator {
         analysis: &SchemaAnalysis,
         operations: &[&OperationInfo],
     ) -> TokenStream {
-        let has_streaming_response = operations.iter().any(|operation| {
-            matches!(
-                self.get_success_response(analysis, operation).body,
-                ClientSuccessBody::EventStream | ClientSuccessBody::Binary
-            )
-        });
+        let plans = self.plan_client_operation_methods(analysis, operations);
+        let has_streaming_response = plans
+            .iter()
+            .flat_map(|plan| &plan.call_shapes)
+            .any(|shape| shape.representation.is_streaming());
         if !has_streaming_response {
             return quote! {};
         }
@@ -588,7 +671,7 @@ impl CodeGenerator {
             .collect();
 
         let (operation_builders, builder_entries) =
-            self.generate_operation_builders(analysis, operations);
+            self.generate_operation_builders(analysis, &method_plans);
 
         quote! {
             #param_enums
@@ -602,6 +685,19 @@ impl CodeGenerator {
                 #(#builder_entries)*
             }
         }
+    }
+
+    /// Return the exact call-shape plan used by the low-level all-operations
+    /// client renderer.
+    ///
+    /// This additive library seam is intentionally transport-focused. Public
+    /// SDK naming and hierarchy do not belong here.
+    pub fn plan_client_call_shapes(&self, analysis: &SchemaAnalysis) -> Vec<ClientCallShapePlan> {
+        let operations: Vec<&OperationInfo> = analysis.operations.values().collect();
+        self.plan_client_operation_methods(analysis, &operations)
+            .into_iter()
+            .flat_map(|plan| plan.call_shapes)
+            .collect()
     }
 
     fn plan_client_operation_methods<'a>(
@@ -628,38 +724,256 @@ impl CodeGenerator {
                     let allocated = Self::allocate_name(&preferred, &mut used_method_names);
                     Self::to_field_ident(&allocated)
                 });
-                let binary_stream_method_name = matches!(
-                    self.get_success_response(analysis, operation).body,
-                    ClientSuccessBody::Binary
-                )
-                .then(|| {
-                    let preferred = format!("{method_name}_stream");
-                    let allocated = Self::allocate_name(&preferred, &mut used_method_names);
-                    Self::to_field_ident(&allocated)
-                });
+                let call_shapes = self.plan_response_call_shapes(
+                    analysis,
+                    operation,
+                    &method_name.to_string(),
+                    &mut used_method_names,
+                );
                 ClientOperationMethodPlan {
                     operation,
-                    method_name,
+                    call_shapes,
                     multipart_filename_method_name,
-                    binary_stream_method_name,
                 }
             })
             .collect()
     }
 
+    fn plan_response_call_shapes(
+        &self,
+        analysis: &SchemaAnalysis,
+        operation: &OperationInfo,
+        base_method_name: &str,
+        used_method_names: &mut std::collections::HashSet<String>,
+    ) -> Vec<ClientCallShapePlan> {
+        let base = self.get_success_response(analysis, operation);
+        let mut call_shapes = Vec::new();
+        let base_shape = self.build_call_shape_plan(
+            analysis,
+            operation,
+            base_method_name.to_string(),
+            base.representation.clone(),
+            base.statuses.clone(),
+        );
+        call_shapes.push(base_shape.clone());
+
+        if matches!(
+            base_shape.representation,
+            ClientResponseRepresentation::BinaryBuffered { .. }
+        ) {
+            self.push_binary_stream_shape(
+                analysis,
+                operation,
+                &base_shape,
+                used_method_names,
+                &mut call_shapes,
+            );
+        }
+
+        let candidates = self.success_response_candidates(analysis, operation);
+        let mut alternate_representations = Vec::new();
+        for (_, response) in &candidates {
+            for representation in response
+                .representations
+                .iter()
+                .map(Self::response_representation_from_inventory)
+            {
+                if representation != base.representation
+                    && !alternate_representations.contains(&representation)
+                {
+                    alternate_representations.push(representation);
+                }
+            }
+        }
+
+        for representation in alternate_representations {
+            let statuses: Vec<String> = candidates
+                .iter()
+                .filter_map(|(status, candidate)| {
+                    Self::response_has_representation(candidate, &representation)
+                        .then_some((*status).to_string())
+                })
+                .collect();
+            if statuses.is_empty() {
+                continue;
+            }
+
+            let preferred =
+                Self::preferred_alternate_method_name(base_method_name, &representation);
+            let method_name = Self::allocate_name(&preferred, used_method_names);
+            let shape = self.build_call_shape_plan(
+                analysis,
+                operation,
+                method_name,
+                representation,
+                statuses,
+            );
+            call_shapes.push(shape.clone());
+
+            if matches!(
+                shape.representation,
+                ClientResponseRepresentation::BinaryBuffered { .. }
+            ) {
+                self.push_binary_stream_shape(
+                    analysis,
+                    operation,
+                    &shape,
+                    used_method_names,
+                    &mut call_shapes,
+                );
+            }
+        }
+
+        call_shapes
+    }
+
+    fn push_binary_stream_shape(
+        &self,
+        analysis: &SchemaAnalysis,
+        operation: &OperationInfo,
+        buffered_shape: &ClientCallShapePlan,
+        used_method_names: &mut std::collections::HashSet<String>,
+        call_shapes: &mut Vec<ClientCallShapePlan>,
+    ) {
+        let ClientResponseRepresentation::BinaryBuffered {
+            media_type,
+            wildcard,
+        } = &buffered_shape.representation
+        else {
+            return;
+        };
+        let representation = ClientResponseRepresentation::BinaryStream {
+            media_type: media_type.clone(),
+            wildcard: *wildcard,
+        };
+        if call_shapes
+            .iter()
+            .any(|shape| shape.representation == representation)
+        {
+            return;
+        }
+        let preferred = format!("{}_stream", buffered_shape.rust_method_name);
+        let method_name = Self::allocate_name(&preferred, used_method_names);
+        call_shapes.push(self.build_call_shape_plan(
+            analysis,
+            operation,
+            method_name,
+            representation,
+            buffered_shape.success_statuses.clone(),
+        ));
+    }
+
+    fn build_call_shape_plan(
+        &self,
+        analysis: &SchemaAnalysis,
+        operation: &OperationInfo,
+        rust_method_name: String,
+        representation: ClientResponseRepresentation,
+        success_statuses: Vec<String>,
+    ) -> ClientCallShapePlan {
+        ClientCallShapePlan {
+            source_operation: Self::source_operation_identity(analysis, operation),
+            emitted_operation_id: operation.operation_id.clone(),
+            success_type: self.success_type_name(&representation),
+            rust_method_name,
+            representation,
+            success_statuses,
+        }
+    }
+
+    fn source_operation_identity(
+        analysis: &SchemaAnalysis,
+        operation: &OperationInfo,
+    ) -> SourceOperationIdentity {
+        let mut source_ids = analysis.operation_id_aliases.iter().filter_map(
+            |(source_operation_id, emitted_operation_ids)| {
+                emitted_operation_ids
+                    .iter()
+                    .any(|operation_id| operation_id == &operation.operation_id)
+                    .then_some(source_operation_id)
+            },
+        );
+        let operation_id = source_ids
+            .next()
+            .cloned()
+            .unwrap_or_else(|| operation.operation_id.clone());
+        debug_assert!(
+            source_ids.next().is_none(),
+            "one emitted operation must map to at most one source operationId"
+        );
+        SourceOperationIdentity {
+            operation_id,
+            method: operation.method.clone(),
+            path: operation.path.clone(),
+        }
+    }
+
+    fn preferred_alternate_method_name(
+        base_method_name: &str,
+        representation: &ClientResponseRepresentation,
+    ) -> String {
+        let suffix = match representation {
+            ClientResponseRepresentation::Json { media_type, .. } => {
+                format!("json_{}", Self::response_media_suffix(media_type))
+            }
+            ClientResponseRepresentation::Text { .. } => "text".to_string(),
+            ClientResponseRepresentation::BinaryBuffered { media_type, .. } => {
+                Self::response_media_suffix(media_type)
+            }
+            ClientResponseRepresentation::EventStream { .. } => "stream".to_string(),
+            ClientResponseRepresentation::BinaryStream { media_type, .. } => {
+                format!("{}_stream", Self::response_media_suffix(media_type))
+            }
+            ClientResponseRepresentation::Empty => "empty".to_string(),
+        };
+        format!("{base_method_name}_{suffix}")
+    }
+
+    fn response_media_suffix(media_type: &str) -> String {
+        let essence = media_type.split(';').next().unwrap_or(media_type).trim();
+        let subtype = essence
+            .split_once('/')
+            .map(|(_, subtype)| subtype)
+            .unwrap_or(essence);
+        if subtype == "*" || subtype.eq_ignore_ascii_case("octet-stream") {
+            return "binary".to_string();
+        }
+        let normalized: String = subtype
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let suffix = normalized.to_snake_case();
+        if suffix.is_empty() {
+            "response".to_string()
+        } else {
+            suffix
+        }
+    }
+
     fn generate_operation_builders(
         &self,
         analysis: &SchemaAnalysis,
-        operations: &[&OperationInfo],
+        plans: &[ClientOperationMethodPlan<'_>],
     ) -> (Vec<TokenStream>, Vec<TokenStream>) {
         if !self.config().builders.enabled {
             return (Vec::new(), Vec::new());
         }
 
-        let mut used_entry_methods: std::collections::HashSet<String> = operations
-            .iter()
-            .map(|operation| self.get_method_name(operation).to_string())
-            .collect();
+        let mut used_entry_methods = std::collections::HashSet::new();
+        for plan in plans {
+            for shape in &plan.call_shapes {
+                used_entry_methods.insert(shape.rust_method_name.clone());
+            }
+            if let Some(method_name) = &plan.multipart_filename_method_name {
+                used_entry_methods.insert(method_name.to_string());
+            }
+        }
         let mut used_type_names = std::collections::HashSet::new();
         for schema_name in analysis.schemas.keys() {
             let rust_name = self.to_rust_type_name(schema_name);
@@ -682,7 +996,8 @@ impl CodeGenerator {
             .into_iter()
             .map(str::to_string),
         );
-        for operation in operations {
+        for plan in plans {
+            let operation = plan.operation;
             used_type_names.insert(self.op_error_enum_ident(operation).to_string());
             used_type_names.extend(
                 operation
@@ -695,7 +1010,11 @@ impl CodeGenerator {
 
         let mut definitions = Vec::new();
         let mut entries = Vec::new();
-        for operation in operations {
+        for plan in plans {
+            let operation = plan.operation;
+            let Some(base_shape) = plan.call_shapes.first() else {
+                continue;
+            };
             let allocated_params = self.allocated_operation_params(operation);
             let body_plan = self.body_model_plan(operation, analysis);
             let optional_param_count = allocated_params
@@ -719,7 +1038,7 @@ impl CodeGenerator {
                 continue;
             }
 
-            let flat_method = self.get_method_name(operation);
+            let flat_method = Self::to_field_ident(&base_shape.rust_method_name);
             let entry_base = format!("{flat_method}_builder");
             let entry_name = Self::allocate_name(&entry_base, &mut used_entry_methods);
             let entry_ident = Self::to_field_ident(&entry_name);
@@ -729,8 +1048,8 @@ impl CodeGenerator {
             let builder_ident = format_ident!("{builder_name}");
 
             let (definition, entry) = self.generate_single_operation_builder(
-                analysis,
                 operation,
+                base_shape,
                 &allocated_params,
                 body_plan,
                 &flat_method,
@@ -747,8 +1066,8 @@ impl CodeGenerator {
     #[allow(clippy::too_many_arguments)]
     fn generate_single_operation_builder(
         &self,
-        analysis: &SchemaAnalysis,
         operation: &OperationInfo,
+        base_shape: &ClientCallShapePlan,
         allocated_params: &[AllocatedOperationParam<'_>],
         body_plan: Option<BodyModelPlan>,
         flat_method: &syn::Ident,
@@ -974,7 +1293,7 @@ impl CodeGenerator {
             call_arguments.push(quote! { self.#body_ident });
         }
 
-        let response_type = self.get_response_type(analysis, operation);
+        let response_type = Self::planned_success_type_tokens(base_shape);
         let error_type = self.op_error_type_token(operation);
         let operation_id = &operation.operation_id;
         let definition = quote! {
@@ -1503,41 +1822,44 @@ impl CodeGenerator {
         }
     }
 
-    /// Generate a single operation method.
+    /// Generate every planned call shape for a single source operation.
     ///
-    /// Multipart operations also get an additive per-call filename variant so
-    /// callers can assign independent filenames without mutating client state.
+    /// Multipart operations also get an additive per-call filename variant for
+    /// the base response shape so callers can assign independent filenames
+    /// without mutating client state.
     fn generate_single_operation_method(
         &self,
         analysis: &SchemaAnalysis,
         plan: &ClientOperationMethodPlan<'_>,
     ) -> TokenStream {
         let op = plan.operation;
-        let mut methods = vec![self.generate_single_operation_method_variant(
-            analysis,
-            op,
-            plan.method_name.clone(),
-            false,
-            ClientResponseRepresentation::Default,
-        )];
-        if let Some(filename_method) = &plan.multipart_filename_method_name {
+        let mut methods: Vec<TokenStream> = plan
+            .call_shapes
+            .iter()
+            .map(|call_shape| {
+                self.generate_single_operation_method_variant(
+                    analysis,
+                    op,
+                    call_shape,
+                    Self::to_field_ident(&call_shape.rust_method_name),
+                    false,
+                )
+            })
+            .collect();
+
+        if let (Some(filename_method), Some(base_shape)) = (
+            &plan.multipart_filename_method_name,
+            plan.call_shapes.first(),
+        ) {
             methods.push(self.generate_single_operation_method_variant(
                 analysis,
                 op,
+                base_shape,
                 filename_method.clone(),
                 true,
-                ClientResponseRepresentation::Default,
             ));
         }
-        if let Some(binary_stream_method) = &plan.binary_stream_method_name {
-            methods.push(self.generate_single_operation_method_variant(
-                analysis,
-                op,
-                binary_stream_method.clone(),
-                false,
-                ClientResponseRepresentation::BinaryStream,
-            ));
-        }
+
         quote! { #(#methods)* }
     }
 
@@ -1545,9 +1867,9 @@ impl CodeGenerator {
         &self,
         analysis: &SchemaAnalysis,
         op: &OperationInfo,
+        call_shape: &ClientCallShapePlan,
         method_name: syn::Ident,
         with_multipart_filenames: bool,
-        response_representation: ClientResponseRepresentation,
     ) -> TokenStream {
         let http_method_call = self.http_method_call(op);
         let path = &op.path;
@@ -1566,14 +1888,14 @@ impl CodeGenerator {
         let header_params = self.generate_header_params(op);
         let cookie_params = self.generate_cookie_params(op);
         let auth_application = self.generate_auth_application();
-        let success = self.get_success_response(analysis, op);
-        let response_type = match response_representation {
-            ClientResponseRepresentation::Default => self.get_response_type(analysis, op),
-            ClientResponseRepresentation::BinaryStream => quote! { HttpResponseByteStream },
-        };
+        let response_type = Self::planned_success_type_tokens(call_shape);
         let op_error_type = self.op_error_type_token(op);
-        let accept = success.accept;
-        let error_handling = self.generate_error_handling(op, success, response_representation);
+        let accept = call_shape.representation.accept_media_type();
+        let error_handling = self.generate_error_handling(
+            op,
+            &call_shape.representation,
+            &call_shape.success_statuses,
+        );
         let (custom_headers, accept_header) = if let Some(media_type) = accept {
             (
                 quote! {
@@ -1605,15 +1927,15 @@ impl CodeGenerator {
                 /// Unspecified binary fields retain the base method's no-filename behavior.
             }
         });
-        let representation_doc = matches!(
-            response_representation,
-            ClientResponseRepresentation::BinaryStream
-        )
-        .then(|| {
-            quote! {
-                /// Stream the successful binary response body without buffering it.
-            }
-        });
+        let representation_doc = match &call_shape.representation {
+            ClientResponseRepresentation::BinaryStream { .. } => Some(quote! {
+                /// Stream the selected successful binary response body without buffering it.
+            }),
+            ClientResponseRepresentation::EventStream { .. } => Some(quote! {
+                /// Stream the selected server-sent event response body.
+            }),
+            _ => None,
+        };
 
         quote! {
             #doc_comment
@@ -1640,6 +1962,7 @@ impl CodeGenerator {
             }
         }
     }
+
     /// T3: emit the auth-token application based on the configured AuthConfig.
     /// Default (no config) is Bearer on Authorization. ApiKey emits a custom
     /// header. Custom honors header_value_prefix.
@@ -3089,7 +3412,7 @@ impl CodeGenerator {
     ///
     /// Only considers 2xx status codes. Error schemas (4xx, 5xx) are ignored
     /// so that endpoints like 204 No Content correctly return `()` instead of
-    /// accidentally picking up the error schema (e.g. `BadRequestError`).
+    /// accidentally picking up the error schema.
     fn get_success_response_schema<'a>(
         &self,
         op: &'a OperationInfo,
@@ -3105,78 +3428,75 @@ impl CodeGenerator {
             .map(|(status, schema)| (status.as_str(), schema))
     }
 
-    fn get_success_response<'a>(
+    fn success_response_candidates<'a>(
         &self,
         analysis: &'a SchemaAnalysis,
-        op: &'a OperationInfo,
-    ) -> ClientSuccessSelection<'a> {
-        if let Some(responses) = analysis.operation_responses.get(&op.operation_id) {
-            let mut candidates = Vec::new();
-            for preferred in ["200", "201"] {
-                if let Some((status, response)) = responses.get_key_value(preferred) {
-                    candidates.push((status.as_str(), response));
-                }
+        op: &OperationInfo,
+    ) -> Vec<(&'a str, &'a crate::analysis::OperationResponse)> {
+        let Some(responses) = analysis.operation_responses.get(&op.operation_id) else {
+            return Vec::new();
+        };
+        let mut candidates = Vec::new();
+        for preferred in ["200", "201"] {
+            if let Some((status, response)) = responses.get_key_value(preferred) {
+                candidates.push((status.as_str(), response));
             }
-            candidates.extend(
-                responses
-                    .iter()
-                    .filter(|(status, _)| {
-                        status.starts_with('2')
-                            && status.as_str() != "200"
-                            && status.as_str() != "201"
-                    })
-                    .map(|(status, response)| (status.as_str(), response)),
-            );
-
-            let selected = candidates
+        }
+        candidates.extend(
+            responses
                 .iter()
-                .copied()
-                .find(|(_, response)| {
+                .filter(|(status, _)| {
+                    status.starts_with('2') && status.as_str() != "200" && status.as_str() != "201"
+                })
+                .map(|(status, response)| (status.as_str(), response)),
+        );
+        candidates
+    }
+
+    fn get_success_response(
+        &self,
+        analysis: &SchemaAnalysis,
+        op: &OperationInfo,
+    ) -> ClientSuccessSelection {
+        let candidates = self.success_response_candidates(analysis, op);
+        let selected = candidates
+            .iter()
+            .copied()
+            .find(|(_, response)| {
+                matches!(
+                    Self::preferred_response_representation(response).success_body(),
+                    ClientSuccessBody::Json(_)
+                        | ClientSuccessBody::Text
+                        | ClientSuccessBody::Binary
+                )
+            })
+            .or_else(|| {
+                candidates.iter().copied().find(|(_, response)| {
                     matches!(
-                        Self::response_body(response),
-                        ClientSuccessBody::Json(_)
-                            | ClientSuccessBody::Text
-                            | ClientSuccessBody::Binary
+                        Self::preferred_response_representation(response).success_body(),
+                        ClientSuccessBody::EventStream
                     )
                 })
-                .or_else(|| {
-                    candidates.iter().copied().find(|(_, response)| {
-                        matches!(
-                            Self::response_body(response),
-                            ClientSuccessBody::EventStream
-                        )
-                    })
-                })
-                .or_else(|| candidates.first().copied());
+            })
+            .or_else(|| candidates.first().copied());
 
-            if let Some((_, response)) = selected {
-                let body = Self::response_body(response);
-                let statuses = candidates
-                    .iter()
-                    .filter_map(|(status, candidate)| {
-                        Self::success_bodies_are_compatible(body, Self::response_body(candidate))
-                            .then_some(*status)
-                    })
-                    .collect();
-                let accept = match &response.body {
-                    Some(OperationResponseBody::Json { media_type, .. })
-                    | Some(OperationResponseBody::Text { media_type }) => Some(media_type.as_str()),
-                    Some(OperationResponseBody::Binary {
-                        media_type,
-                        wildcard,
-                    }) => (!wildcard).then_some(media_type.as_str()),
-                    None if response.schema_name.is_some() => {
-                        response.media_type.as_deref().or(Some("application/json"))
-                    }
-                    None if response.supports_streaming => Some("text/event-stream"),
-                    None => None,
-                };
-                return ClientSuccessSelection {
-                    statuses,
-                    body,
-                    accept,
-                };
-            }
+        if let Some((_, response)) = selected {
+            let representation = Self::preferred_response_representation(response);
+            let body = representation.success_body();
+            let statuses = candidates
+                .iter()
+                .filter_map(|(status, candidate)| {
+                    Self::success_bodies_are_compatible(
+                        body,
+                        Self::preferred_response_representation(candidate).success_body(),
+                    )
+                    .then_some((*status).to_string())
+                })
+                .collect();
+            return ClientSuccessSelection {
+                statuses,
+                representation,
+            };
         }
 
         if let Some((_status, schema_name)) = self.get_success_response_schema(op) {
@@ -3185,42 +3505,119 @@ impl CodeGenerator {
                 .iter()
                 .filter_map(|(candidate_status, candidate_schema)| {
                     (candidate_status.starts_with('2') && candidate_schema == schema_name)
-                        .then_some(candidate_status.as_str())
+                        .then_some(candidate_status.clone())
                 })
                 .collect();
             ClientSuccessSelection {
                 statuses,
-                body: ClientSuccessBody::Json(schema_name),
-                accept: Some("application/json"),
+                representation: ClientResponseRepresentation::Json {
+                    schema_name: schema_name.clone(),
+                    media_type: "application/json".to_string(),
+                },
             }
         } else if Self::returns_raw_event_stream(op) {
             ClientSuccessSelection {
                 statuses: Vec::new(),
-                body: ClientSuccessBody::EventStream,
-                accept: Some("text/event-stream"),
+                representation: ClientResponseRepresentation::EventStream {
+                    media_type: "text/event-stream".to_string(),
+                },
             }
         } else {
             ClientSuccessSelection {
                 statuses: Vec::new(),
-                body: ClientSuccessBody::Empty,
-                accept: None,
+                representation: ClientResponseRepresentation::Empty,
             }
         }
     }
 
-    fn response_body(response: &crate::analysis::OperationResponse) -> ClientSuccessBody<'_> {
+    fn preferred_response_representation(
+        response: &crate::analysis::OperationResponse,
+    ) -> ClientResponseRepresentation {
         match &response.body {
-            Some(OperationResponseBody::Json { schema_name, .. }) => {
-                ClientSuccessBody::Json(schema_name)
+            Some(OperationResponseBody::Json {
+                schema_name,
+                media_type,
+            }) => ClientResponseRepresentation::Json {
+                schema_name: schema_name.clone(),
+                media_type: media_type.clone(),
+            },
+            Some(OperationResponseBody::Text { media_type }) => {
+                ClientResponseRepresentation::Text {
+                    media_type: media_type.clone(),
+                }
             }
-            Some(OperationResponseBody::Text { .. }) => ClientSuccessBody::Text,
-            Some(OperationResponseBody::Binary { .. }) => ClientSuccessBody::Binary,
-            None if response.schema_name.is_some() => {
-                ClientSuccessBody::Json(response.schema_name.as_deref().unwrap_or_default())
-            }
-            None if response.supports_streaming => ClientSuccessBody::EventStream,
-            None => ClientSuccessBody::Empty,
+            Some(OperationResponseBody::Binary {
+                media_type,
+                wildcard,
+            }) => ClientResponseRepresentation::BinaryBuffered {
+                media_type: media_type.clone(),
+                wildcard: *wildcard,
+            },
+            None if response.schema_name.is_some() => ClientResponseRepresentation::Json {
+                schema_name: response.schema_name.clone().unwrap_or_default(),
+                media_type: response
+                    .media_type
+                    .clone()
+                    .unwrap_or_else(|| "application/json".to_string()),
+            },
+            None if response.supports_streaming => ClientResponseRepresentation::EventStream {
+                media_type: "text/event-stream".to_string(),
+            },
+            None => ClientResponseRepresentation::Empty,
         }
+    }
+
+    fn response_representation_from_inventory(
+        representation: &OperationResponseRepresentation,
+    ) -> ClientResponseRepresentation {
+        match representation {
+            OperationResponseRepresentation::Json {
+                schema_name,
+                media_type,
+            } => ClientResponseRepresentation::Json {
+                schema_name: schema_name.clone(),
+                media_type: media_type.clone(),
+            },
+            OperationResponseRepresentation::Text { media_type } => {
+                ClientResponseRepresentation::Text {
+                    media_type: media_type.clone(),
+                }
+            }
+            OperationResponseRepresentation::Binary {
+                media_type,
+                wildcard,
+            } => ClientResponseRepresentation::BinaryBuffered {
+                media_type: media_type.clone(),
+                wildcard: *wildcard,
+            },
+            OperationResponseRepresentation::EventStream { media_type } => {
+                ClientResponseRepresentation::EventStream {
+                    media_type: media_type.clone(),
+                }
+            }
+        }
+    }
+
+    fn response_has_representation(
+        response: &crate::analysis::OperationResponse,
+        representation: &ClientResponseRepresentation,
+    ) -> bool {
+        let buffered_representation = match representation {
+            ClientResponseRepresentation::BinaryStream {
+                media_type,
+                wildcard,
+            } => ClientResponseRepresentation::BinaryBuffered {
+                media_type: media_type.clone(),
+                wildcard: *wildcard,
+            },
+            other => other.clone(),
+        };
+        Self::preferred_response_representation(response) == buffered_representation
+            || response
+                .representations
+                .iter()
+                .map(Self::response_representation_from_inventory)
+                .any(|candidate| candidate == buffered_representation)
     }
 
     fn success_bodies_are_compatible(
@@ -3239,24 +3636,29 @@ impl CodeGenerator {
         }
     }
 
-    /// Get response type
-    fn get_response_type(&self, analysis: &SchemaAnalysis, op: &OperationInfo) -> TokenStream {
-        match self.get_success_response(analysis, op).body {
-            ClientSuccessBody::Json(response_type) => {
-                // Convert schema name to Rust type name (handles underscores, etc.)
-                let rust_type_name = self.to_rust_type_name(response_type);
-                let response_ident =
-                    syn::Ident::new(&rust_type_name, proc_macro2::Span::call_site());
-                quote! { #response_ident }
+    fn success_type_name(&self, representation: &ClientResponseRepresentation) -> String {
+        match representation {
+            ClientResponseRepresentation::Json { schema_name, .. } => {
+                self.to_rust_type_name(schema_name)
             }
-            ClientSuccessBody::Text => quote! { String },
-            ClientSuccessBody::Binary => quote! { bytes::Bytes },
-            ClientSuccessBody::EventStream => quote! { HttpResponseByteStream },
-            ClientSuccessBody::Empty => quote! { () },
+            ClientResponseRepresentation::Text { .. } => "String".to_string(),
+            ClientResponseRepresentation::BinaryBuffered { .. } => "bytes::Bytes".to_string(),
+            ClientResponseRepresentation::EventStream { .. }
+            | ClientResponseRepresentation::BinaryStream { .. } => {
+                "HttpResponseByteStream".to_string()
+            }
+            ClientResponseRepresentation::Empty => "()".to_string(),
         }
     }
 
-    fn success_status_guard(statuses: &[&str]) -> TokenStream {
+    fn planned_success_type_tokens(call_shape: &ClientCallShapePlan) -> TokenStream {
+        match syn::parse_str::<syn::Type>(&call_shape.success_type) {
+            Ok(response_type) => quote! { #response_type },
+            Err(error) => error.to_compile_error(),
+        }
+    }
+
+    fn success_status_guard(statuses: &[String]) -> TokenStream {
         if statuses.is_empty() {
             return quote! { status.is_success() };
         }
@@ -3306,16 +3708,16 @@ impl CodeGenerator {
     fn generate_error_handling(
         &self,
         op: &OperationInfo,
-        success: ClientSuccessSelection<'_>,
-        response_representation: ClientResponseRepresentation,
+        representation: &ClientResponseRepresentation,
+        success_statuses: &[String],
     ) -> TokenStream {
         let op_error_type = self.op_error_type_token(op);
-        let success_body = success.body;
-        let success_status_guard = Self::success_status_guard(&success.statuses);
-        let selected_status = if success.statuses.is_empty() {
+        let success_body = representation.success_body();
+        let success_status_guard = Self::success_status_guard(success_statuses);
+        let selected_status = if success_statuses.is_empty() {
             "any declared 2xx response".to_string()
         } else {
-            success.statuses.join(", ")
+            success_statuses.join(", ")
         };
 
         let success_branch = match success_body {
@@ -3350,22 +3752,10 @@ impl CodeGenerator {
 
         let error_match_arms = self.generate_error_match_arms(op);
 
-        // Streaming success path: hand back the live byte stream instead of
-        // buffering it. SSE is intrinsically streaming; binary responses expose
-        // this as an additive representation while retaining their buffered method.
-        // The error path still buffers — an error response is finite and bounded.
-        let streams_success = matches!(success_body, ClientSuccessBody::EventStream)
-            || matches!(
-                response_representation,
-                ClientResponseRepresentation::BinaryStream
-            );
-        debug_assert!(
-            !matches!(
-                response_representation,
-                ClientResponseRepresentation::BinaryStream
-            ) || matches!(success_body, ClientSuccessBody::Binary)
-        );
-        if streams_success {
+        // Streaming success paths hand back the live byte stream instead of
+        // buffering it. The representation identity — never the Rust method
+        // name — decides whether a call shape streams.
+        if representation.is_streaming() {
             return quote! {
                 let status = response.status();
                 let status_code = status.as_u16();
@@ -3409,7 +3799,10 @@ impl CodeGenerator {
             };
         }
 
-        if matches!(success_body, ClientSuccessBody::Binary) {
+        if matches!(
+            representation,
+            ClientResponseRepresentation::BinaryBuffered { .. }
+        ) {
             return quote! {
                 let status = response.status();
                 let status_code = status.as_u16();
