@@ -487,7 +487,9 @@ fn generator_section_retains_standalone_serde_compatibility() {
         spec_path: "openapi.yaml".into(),
         output_dir: "src/generated".into(),
         module_name: "api".into(),
-        schema_extensions: vec!["overlay.yaml".into()],
+        schema_extensions: vec!["extension.yaml".into()],
+        overlays: vec!["contract.overlay.yaml".into()],
+        overlay_output: Some("materialized/openapi.json".into()),
         builders: BuildersSection::default(),
     };
 
@@ -497,6 +499,8 @@ fn generator_section_retains_standalone_serde_compatibility() {
     assert_eq!(reparsed.output_dir, section.output_dir);
     assert_eq!(reparsed.module_name, section.module_name);
     assert_eq!(reparsed.schema_extensions, section.schema_extensions);
+    assert_eq!(reparsed.overlays, section.overlays);
+    assert_eq!(reparsed.overlay_output, section.overlay_output);
     assert_eq!(reparsed.builders, section.builders);
 }
 
