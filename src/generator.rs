@@ -1185,6 +1185,8 @@ impl CodeGenerator {
     ) -> Result<String> {
         let provenance_attribute = self.provenance_attribute();
         let error_types = self.generate_http_error_types();
+        let response_stream_type_alias =
+            self.generate_http_response_stream_type_alias(analysis, operations);
         let client_struct = self.generate_http_client_struct();
         let operation_methods = self.generate_operation_methods_for(analysis, operations);
 
@@ -1200,6 +1202,8 @@ impl CodeGenerator {
             use super::types::*;
 
             #error_types
+
+            #response_stream_type_alias
 
             #client_struct
 
