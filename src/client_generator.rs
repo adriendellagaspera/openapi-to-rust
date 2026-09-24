@@ -259,9 +259,8 @@ impl ClientResponseRepresentation {
 /// Stable OpenAPI identity for a generated operation.
 ///
 /// `operation_id` is the source document's operationId before the analyzer's
-/// collision-safe emitted-ID allocation. The `path` is the analyzed HTTP route,
-/// which may differ from the literal source OpenAPI key when route normalization
-/// occurs; consumers needing exact source paths must resolve them independently.
+/// collision-safe emitted-ID allocation. Method and path disambiguate duplicate
+/// or otherwise invalid real-world operationIds without depending on Rust names.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub struct SourceOperationIdentity {
     pub operation_id: String,
@@ -269,6 +268,10 @@ pub struct SourceOperationIdentity {
     pub path: String,
 }
 
+/// Shared pre-render plan for one generated client call shape.
+///
+/// Source rendering consumes this shared plan so naming, response
+/// representation and success-type decisions are made once.
 /// One validated request discriminator attached to the exact response
 /// representation it selects. The access path and Rust value type come from
 /// the same emitted request-model projection used by source rendering.
@@ -283,8 +286,6 @@ pub struct ClientRequestDiscriminatorPlan {
     pub field_tri_state: bool,
 }
 
-/// Shared pre-render plan used by ordinary client method generation and exposed
-/// for generic library callers. It does not require a producer binding manifest.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ClientCallShapePlan {
     pub source_operation: SourceOperationIdentity,
@@ -326,12 +327,6 @@ struct ClientOperationMethodPlan<'a> {
     operation: &'a OperationInfo,
     call_shapes: Vec<ClientCallShapePlan>,
     multipart_filename_method_name: Option<syn::Ident>,
-}
-
-#[derive(Clone)]
-struct ClientMethodParameterPlan {
-    ident: syn::Ident,
-    rust_type: TokenStream,
 }
 
 impl CodeGenerator {
@@ -1966,33 +1961,6 @@ impl CodeGenerator {
         })
     }
 
-    pub(crate) fn parameter_enum_variant_names(&self, param: &ParameterInfo) -> Vec<String> {
-        let Some(values) = param.enum_values.as_deref() else {
-            return Vec::new();
-        };
-
-        let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
-        values
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
-                let base = param
-                    .enum_varnames
-                    .as_ref()
-                    .and_then(|names| names.get(index))
-                    .map(|name| self.to_rust_enum_variant(name))
-                    .unwrap_or_else(|| self.to_rust_enum_variant(value));
-                let mut chosen = base.clone();
-                let mut suffix = 2;
-                while !used.insert(chosen.clone()) {
-                    chosen = format!("{base}{suffix}");
-                    suffix += 1;
-                }
-                chosen
-            })
-            .collect()
-    }
-
     /// Emit inline enum types for parameters whose schema is `type: string`
     /// with `enum` or `const`. The generated enum implements `Display` so it
     /// drops into the existing `format!`-based path/query templating without
@@ -2026,9 +1994,38 @@ impl CodeGenerator {
 
         let enum_ident = format_ident!("{}", param.rust_type);
 
-        // Use the same collision-stable naming plan for all rendered parameter
-        // enums, including x-enum-varnames overrides.
-        let variant_names = self.parameter_enum_variant_names(param);
+        // Dedupe variant names. Real-world specs use sort enums like
+        // `["created_at", "-created_at"]` (descending prefix), and both
+        // PascalCase to `CreatedAt`. Suffix collisions with `_2`/`_3`/…
+        // while keeping each `serde(rename)` pointing at the original
+        // wire string.
+        let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // `x-enum-varnames` wins over the naming heuristic when the spec
+        // supplies it — the whole point of the extension is that the author
+        // knows better than a transformation of the wire string. Schema-level
+        // enums already honored it; parameter enums did not, so the same spec
+        // produced different variant names depending on where its enum lived.
+        // Suffix disambiguation still applies, since nothing stops a spec from
+        // declaring two names that collide once converted to an identifier.
+        let variant_names: Vec<String> = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let base = param
+                    .enum_varnames
+                    .as_ref()
+                    .and_then(|names| names.get(index))
+                    .map(|name| self.to_rust_enum_variant(name))
+                    .unwrap_or_else(|| self.to_rust_enum_variant(value));
+                let mut chosen = base.clone();
+                let mut suffix = 2;
+                while !used.insert(chosen.clone()) {
+                    chosen = format!("{base}{suffix}");
+                    suffix += 1;
+                }
+                chosen
+            })
+            .collect();
 
         let variants: Vec<TokenStream> = values
             .iter()
@@ -2230,7 +2227,8 @@ impl CodeGenerator {
         let header_params = self.generate_header_params(op);
         let cookie_params = self.generate_cookie_params(op);
         let auth_application = self.generate_auth_application();
-        let return_type = self.planned_return_type_tokens(op, call_shape);
+        let response_type = Self::planned_success_type_tokens(call_shape);
+        let op_error_type = self.op_error_type_token(op);
         let accept = call_shape.representation.accept_media_type();
         let error_handling = self.generate_error_handling(
             op,
@@ -2285,7 +2283,7 @@ impl CodeGenerator {
             pub async fn #method_name(
                 &self,
                 #request_params
-            ) -> #return_type {
+            ) -> Result<#response_type, ApiOpError<#op_error_type>> {
                 #url_construction
 
                 let mut req = #http_method_call;
@@ -3202,20 +3200,13 @@ impl CodeGenerator {
 
     /// Generate request parameters including path, query, header, and request body.
     fn generate_request_param(&self, op: &OperationInfo) -> TokenStream {
-        let params = self.plan_request_params(op);
-        let params = params.iter().map(|param| {
-            let ident = &param.ident;
-            let rust_type = &param.rust_type;
-            quote! { #ident: #rust_type }
-        });
-        quote! { #(#params),* }
-    }
-
-    fn plan_request_params(&self, op: &OperationInfo) -> Vec<ClientMethodParameterPlan> {
         let mut params = Vec::new();
-        // Real-world specs may contain parameter names that sanitize to the
-        // same Rust identifier; allocate once so every renderer uses the same
-        // deterministic suffixing.
+        // Dedup parameter Rust idents within this method signature. Real-world
+        // specs sometimes declare two parameters that sanitize to the same
+        // snake_case name (modern-treasury declared `name` twice across
+        // different param objects). Suffixing with `_2`, `_3`, … keeps each
+        // parameter accessible while preserving the original wire-level name
+        // (which is used elsewhere as the query/path/header key).
         let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut unique_param_ident = |raw: String| -> syn::Ident {
             let mut chosen = raw.clone();
@@ -3227,64 +3218,116 @@ impl CodeGenerator {
             Self::to_field_ident(&chosen)
         };
 
-        for location in ["path", "query", "header", "cookie"] {
-            for param in &op.parameters {
-                if param.location != location {
-                    continue;
-                }
-                let ident = unique_param_ident(self.param_ident_str(param));
-                let base = self.get_param_rust_type(param);
-                let rust_type = if location == "path" || param.required {
-                    base
-                } else {
-                    quote! { Option<#base> }
-                };
-                params.push(ClientMethodParameterPlan { ident, rust_type });
+        // Add path parameters
+        for param in &op.parameters {
+            if param.location == "path" {
+                let param_name_snake = self.param_ident_str(param);
+                let param_name = unique_param_ident(param_name_snake);
+                let param_type = self.get_param_rust_type(param);
+                params.push(quote! { #param_name: #param_type });
             }
         }
 
-        let Some(ref rb) = op.request_body else {
-            return params;
-        };
-        use crate::analysis::RequestBodyContent;
-        if matches!(rb, RequestBodyContent::SchemaLess { .. }) {
-            return params;
+        // Add query parameters (all as Option<T>)
+        for param in &op.parameters {
+            if param.location == "query" {
+                let param_name_snake = self.param_ident_str(param);
+                let param_name = unique_param_ident(param_name_snake);
+                let param_type = self.get_param_rust_type(param);
+
+                // Query parameters should be Option unless explicitly required
+                if param.required {
+                    params.push(quote! { #param_name: #param_type });
+                } else {
+                    params.push(quote! { #param_name: Option<#param_type> });
+                }
+            }
         }
-        let body_type = match rb {
-            RequestBodyContent::Json { schema_name, .. }
-            | RequestBodyContent::FormUrlEncoded { schema_name, .. }
-            | RequestBodyContent::Multipart { schema_name, .. } => {
-                let rust_type_name = self.to_rust_type_name(schema_name);
-                let request_ident =
-                    syn::Ident::new(&rust_type_name, proc_macro2::Span::call_site());
-                quote! { #request_ident }
+
+        // Add header parameters. Required headers are bare; optional ones are
+        // Option<T>. Per OAS 3.x §"Parameter Object", header names matching
+        // `Accept`, `Content-Type`, and `Authorization` are forbidden — those
+        // are described by other mechanisms — but we leave that validation to
+        // analysis.
+        for param in &op.parameters {
+            if param.location == "header" {
+                let param_name_snake = self.param_ident_str(param);
+                let param_name = unique_param_ident(param_name_snake);
+                let param_type = self.get_param_rust_type(param);
+                if param.required {
+                    params.push(quote! { #param_name: #param_type });
+                } else {
+                    params.push(quote! { #param_name: Option<#param_type> });
+                }
             }
-            RequestBodyContent::OctetStream { .. } | RequestBodyContent::Binary { .. } => {
-                quote! { Vec<u8> }
+        }
+
+        for param in &op.parameters {
+            if param.location == "cookie" {
+                let param_name_snake = self.param_ident_str(param);
+                let param_name = unique_param_ident(param_name_snake);
+                let param_type = self.get_param_rust_type(param);
+                if param.required {
+                    params.push(quote! { #param_name: #param_type });
+                } else {
+                    params.push(quote! { #param_name: Option<#param_type> });
+                }
             }
-            RequestBodyContent::TextPlain { .. } => quote! { String },
-            RequestBodyContent::Unsupported { .. } => quote! { Vec<u8> },
-            RequestBodyContent::SchemaLess { .. } => {
-                unreachable!("schema-less request bodies preserve the historical client signature")
+        }
+
+        // Add request body parameter based on content type. Optional bodies
+        // (`requestBody.required` is false or absent) become `Option<T>` per T11.
+        if let Some(ref rb) = op.request_body {
+            use crate::analysis::RequestBodyContent;
+            if matches!(rb, RequestBodyContent::SchemaLess { .. }) {
+                return if params.is_empty() {
+                    quote! {}
+                } else {
+                    quote! { #(#params),* }
+                };
             }
-        };
-        let ident = match rb {
-            RequestBodyContent::OctetStream { .. }
-            | RequestBodyContent::Binary { .. }
-            | RequestBodyContent::TextPlain { .. }
-            | RequestBodyContent::Unsupported { .. } => Self::to_field_ident("body"),
-            RequestBodyContent::SchemaLess { .. } => {
-                unreachable!("schema-less request bodies preserve the historical client signature")
+            let required = op.request_body_required;
+            let body_type = match rb {
+                RequestBodyContent::Json { schema_name, .. }
+                | RequestBodyContent::FormUrlEncoded { schema_name, .. }
+                | RequestBodyContent::Multipart { schema_name, .. } => {
+                    let rust_type_name = self.to_rust_type_name(schema_name);
+                    let request_ident =
+                        syn::Ident::new(&rust_type_name, proc_macro2::Span::call_site());
+                    quote! { #request_ident }
+                }
+
+                RequestBodyContent::OctetStream { .. } | RequestBodyContent::Binary { .. } => {
+                    quote! { Vec<u8> }
+                }
+                RequestBodyContent::TextPlain { .. } => quote! { String },
+                RequestBodyContent::Unsupported { .. } => quote! { Vec<u8> },
+                RequestBodyContent::SchemaLess { .. } => unreachable!(
+                    "schema-less request bodies preserve the historical client signature"
+                ),
+            };
+            let body_ident = match rb {
+                RequestBodyContent::OctetStream { .. }
+                | RequestBodyContent::Binary { .. }
+                | RequestBodyContent::TextPlain { .. }
+                | RequestBodyContent::Unsupported { .. } => quote! { body },
+                RequestBodyContent::SchemaLess { .. } => unreachable!(
+                    "schema-less request bodies preserve the historical client signature"
+                ),
+                _ => quote! { request },
+            };
+            if required {
+                params.push(quote! { #body_ident: #body_type });
+            } else {
+                params.push(quote! { #body_ident: Option<#body_type> });
             }
-            _ => Self::to_field_ident("request"),
-        };
-        let rust_type = if op.request_body_required {
-            body_type
+        }
+
+        if params.is_empty() {
+            quote! {}
         } else {
-            quote! { Option<#body_type> }
-        };
-        params.push(ClientMethodParameterPlan { ident, rust_type });
-        params
+            quote! { #(#params),* }
+        }
     }
 
     /// Get the Rust type for a parameter
@@ -4005,16 +4048,6 @@ impl CodeGenerator {
             Ok(response_type) => quote! { #response_type },
             Err(error) => error.to_compile_error(),
         }
-    }
-
-    fn planned_return_type_tokens(
-        &self,
-        operation: &OperationInfo,
-        call_shape: &ClientCallShapePlan,
-    ) -> TokenStream {
-        let success_type = Self::planned_success_type_tokens(call_shape);
-        let op_error_type = self.op_error_type_token(operation);
-        quote! { Result<#success_type, ApiOpError<#op_error_type>> }
     }
 
     fn success_status_guard(statuses: &[String]) -> TokenStream {

@@ -583,8 +583,7 @@ pub struct OperationResponse {
     /// Every supported transport representation retained from this Response
     /// Object. The existing `body` field remains the preferred buffered
     /// representation for source compatibility; this inventory preserves
-    /// alternate SSE/binary/text transports for client method planning and
-    /// generator-owned binding metadata.
+    /// alternate SSE/binary/text transports for client method planning.
     #[serde(skip)]
     pub representations: Vec<OperationResponseRepresentation>,
     /// Whether this response also declares `text/event-stream` content.
@@ -619,7 +618,7 @@ pub enum OperationResponseBody {
 ///
 /// This is deliberately independent from generated Rust method names. A
 /// source operation can expose several call shapes over the same HTTP path;
-/// downstream binding metadata can therefore identify the selected transport
+/// generated client methods can therefore select the transport
 /// without inferring semantics from suffixes such as `_stream`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationResponseRepresentation {

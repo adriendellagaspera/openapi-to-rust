@@ -19,9 +19,9 @@ pub struct Message {
     pub id: String,
     ///The model that was used to generate the message.
     pub model: String,
-    ///Conversational role of the generated message.
-    ///
-    ///This will always be `"assistant"`.
+    /**Conversational role of the generated message.
+
+This will always be `"assistant"`.*/
     #[serde(default)]
     pub role: MessageRole,
 }

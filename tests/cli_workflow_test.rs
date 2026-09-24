@@ -57,31 +57,6 @@ fn assert_success(output: &Output) {
 }
 
 #[test]
-fn regeneration_removes_stale_legacy_binding_manifest_without_emitting_a_new_one() {
-    let temp = TempDir::new().unwrap();
-    std::fs::write(temp.path().join("api.yaml"), SPEC).unwrap();
-    let output = temp.path().join("generated");
-    std::fs::create_dir_all(&output).unwrap();
-    std::fs::write(output.join("binding-manifest.json"), "{\"stale\":true}").unwrap();
-
-    let generated = run(
-        temp.path(),
-        &[
-            "generate",
-            "api.yaml",
-            "--output-dir",
-            "generated",
-            "--quiet",
-        ],
-    );
-    assert_success(&generated);
-    assert!(!output.join("binding-manifest.json").exists());
-    for file in ["types.rs", "client.rs", "mod.rs", "REQUIRED_DEPS.toml"] {
-        assert!(output.join(file).is_file(), "{file}");
-    }
-}
-
-#[test]
 fn direct_generation_supports_client_types_only_dry_run_check_quiet_and_json() {
     let temp = TempDir::new().unwrap();
     std::fs::write(temp.path().join("api.yaml"), SPEC).unwrap();
