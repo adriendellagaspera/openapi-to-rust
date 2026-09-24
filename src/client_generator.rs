@@ -270,9 +270,8 @@ pub struct SourceOperationIdentity {
 
 /// Shared pre-render plan for one generated client call shape.
 ///
-/// Source rendering and generator-owned binding metadata consume this same
-/// object so naming, response representation and success-type decisions are
-/// made once.
+/// Source rendering consumes this shared plan so naming, response
+/// representation and success-type decisions are made once.
 /// One validated request discriminator attached to the exact response
 /// representation it selects. The access path and Rust value type come from
 /// the same emitted request-model projection used by source rendering.
