@@ -288,6 +288,93 @@ fn optional_content_body_emits_zero_content_length_only_when_absent() {
 }
 
 #[test]
+fn optional_nullable_json_root_body_preserves_three_wire_states() {
+    let generator = CodeGenerator::new(create_test_config());
+    let operation = OperationInfo {
+        operation_id: "changeState".to_string(),
+        method: "POST".to_string(),
+        path: "/state".to_string(),
+        summary: None,
+        description: None,
+        request_body: Some(RequestBodyContent::Json {
+            schema_name: "StateChangeRequest".to_string(),
+            media_type: "application/json".to_string(),
+            validation_schema: json!({
+                "anyOf": [
+                    {"$ref": "#/components/schemas/StateChangeRequest"},
+                    {"type": "null"}
+                ],
+                "title": "State change"
+            }),
+        }),
+        response_schemas: BTreeMap::new(),
+        parameters: vec![],
+        request_body_required: false,
+        supports_streaming: false,
+        stream_parameter: None,
+        tags: Vec::new(),
+    };
+
+    let analysis = create_test_analysis_with_operations(vec![operation]);
+    let generated = generator.generate_operation_methods(&analysis).to_string();
+    let compact = generated.split_whitespace().collect::<String>();
+
+    assert!(
+        compact.contains("request:Option<Option<StateChangeRequest>>"),
+        "{generated}"
+    );
+    assert!(
+        compact.contains("ifletSome(request)=request"),
+        "{generated}"
+    );
+    assert!(
+        compact.contains("serde_json::to_vec(&request)"),
+        "{generated}"
+    );
+}
+
+#[test]
+fn optional_json_root_with_constraints_does_not_claim_nullable_tri_state() {
+    let generator = CodeGenerator::new(create_test_config());
+    let operation = OperationInfo {
+        operation_id: "changeState".to_string(),
+        method: "POST".to_string(),
+        path: "/state".to_string(),
+        summary: None,
+        description: None,
+        request_body: Some(RequestBodyContent::Json {
+            schema_name: "StateChangeRequest".to_string(),
+            media_type: "application/json".to_string(),
+            validation_schema: json!({
+                "anyOf": [
+                    {"$ref": "#/components/schemas/StateChangeRequest"},
+                    {"type": "null"}
+                ],
+                "maxProperties": 1
+            }),
+        }),
+        response_schemas: BTreeMap::new(),
+        parameters: vec![],
+        request_body_required: false,
+        supports_streaming: false,
+        stream_parameter: None,
+        tags: Vec::new(),
+    };
+
+    let analysis = create_test_analysis_with_operations(vec![operation]);
+    let generated = generator.generate_operation_methods(&analysis).to_string();
+
+    assert!(
+        generated.contains("request : Option < StateChangeRequest >"),
+        "{generated}"
+    );
+    assert!(
+        !generated.contains("request : Option < Option < StateChangeRequest > >"),
+        "{generated}"
+    );
+}
+
+#[test]
 fn test_generate_put_operation() {
     let config = create_test_config();
     let generator = CodeGenerator::new(config);

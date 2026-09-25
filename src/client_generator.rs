@@ -1450,6 +1450,7 @@ impl CodeGenerator {
         }
 
         if let Some(body_plan) = body_plan {
+            let nullable_root_body = Self::optional_nullable_json_root_body(operation);
             let BodyModelPlan {
                 body_ident,
                 body_type,
@@ -1488,6 +1489,9 @@ impl CodeGenerator {
                         initializers.push(quote! { #body_ident: #entry_param });
                     }
                 }
+            } else if nullable_root_body {
+                fields.push(quote! { #body_ident: Option<Option<#body_type>> });
+                initializers.push(quote! { #body_ident: None });
             } else {
                 fields.push(quote! { #body_ident: Option<#body_type> });
                 initializers.push(quote! { #body_ident: None });
@@ -1497,6 +1501,8 @@ impl CodeGenerator {
                 Self::allocate_builder_method(&body_ident.to_string(), &mut used_methods);
             let body_assignment = if operation.request_body_required {
                 quote! { self.#body_ident = #body_ident; }
+            } else if nullable_root_body {
+                quote! { self.#body_ident = Some(Some(#body_ident)); }
             } else {
                 quote! { self.#body_ident = Some(#body_ident); }
             };
@@ -1508,6 +1514,31 @@ impl CodeGenerator {
                     self
                 }
             });
+            if nullable_root_body {
+                let null_ident = Self::allocate_builder_method(
+                    &format!("{}_null", body_ident),
+                    &mut used_methods,
+                );
+                let absent_ident = Self::allocate_builder_method(
+                    &format!("{}_absent", body_ident),
+                    &mut used_methods,
+                );
+                setters.push(quote! {
+                    /// Send an explicit JSON null request body.
+                    #[must_use]
+                    pub fn #null_ident(mut self) -> Self {
+                        self.#body_ident = Some(None);
+                        self
+                    }
+
+                    /// Omit the optional request body entirely.
+                    #[must_use]
+                    pub fn #absent_ident(mut self) -> Self {
+                        self.#body_ident = None;
+                        self
+                    }
+                });
+            }
 
             if operation.request_body_required || can_initialize_optional_body {
                 for field in optional_fields {
@@ -1535,14 +1566,26 @@ impl CodeGenerator {
                         for access in &access_path {
                             target = quote! { #target.#access };
                         }
-                        if field.tri_state {
+                        let request_init = if nullable_root_body {
                             quote! {
-                                let request = self.#body_ident.get_or_insert_with(Default::default);
-                                #target = Some(Some(#value_ident));
+                                let request = self
+                                    .#body_ident
+                                    .get_or_insert_with(|| Some(Default::default()))
+                                    .get_or_insert_with(Default::default);
                             }
                         } else {
                             quote! {
                                 let request = self.#body_ident.get_or_insert_with(Default::default);
+                            }
+                        };
+                        if field.tri_state {
+                            quote! {
+                                #request_init
+                                #target = Some(Some(#value_ident));
+                            }
+                        } else {
+                            quote! {
+                                #request_init
                                 #target = Some(#value_ident);
                             }
                         }
@@ -1575,9 +1618,20 @@ impl CodeGenerator {
                             for access in &access_path {
                                 target = quote! { #target.#access };
                             }
-                            quote! {
-                                let request = self.#body_ident.get_or_insert_with(Default::default);
-                                #target = Some(None);
+                            if nullable_root_body {
+                                quote! {
+                                    let request = self
+                                        .#body_ident
+                                        .get_or_insert_with(|| Some(Default::default()))
+                                        .get_or_insert_with(Default::default);
+                                    #target = Some(None);
+                                }
+                            } else {
+                                quote! {
+                                    let request =
+                                        self.#body_ident.get_or_insert_with(Default::default);
+                                    #target = Some(None);
+                                }
                             }
                         };
                         let absent_assignment = if operation.request_body_required {
@@ -1591,9 +1645,21 @@ impl CodeGenerator {
                             for access in &access_path {
                                 target = quote! { #target.#access };
                             }
-                            quote! {
-                                if let Some(request) = self.#body_ident.as_mut() {
-                                    #target = None;
+                            if nullable_root_body {
+                                quote! {
+                                    if let Some(request) = self
+                                        .#body_ident
+                                        .as_mut()
+                                        .and_then(Option::as_mut)
+                                    {
+                                        #target = None;
+                                    }
+                                }
+                            } else {
+                                quote! {
+                                    if let Some(request) = self.#body_ident.as_mut() {
+                                        #target = None;
+                                    }
                                 }
                             }
                         };
@@ -3198,6 +3264,83 @@ impl CodeGenerator {
         }
     }
 
+    fn optional_nullable_json_root_body(operation: &OperationInfo) -> bool {
+        if operation.request_body_required {
+            return false;
+        }
+        let Some(crate::analysis::RequestBodyContent::Json {
+            validation_schema, ..
+        }) = operation.request_body.as_ref()
+        else {
+            return false;
+        };
+        let Some(object) = validation_schema.as_object() else {
+            return false;
+        };
+        if object.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "anyOf"
+                    | "title"
+                    | "description"
+                    | "deprecated"
+                    | "example"
+                    | "examples"
+                    | "default"
+                    | "$comment"
+            )
+        }) {
+            return false;
+        }
+        let Some(branches) = object.get("anyOf").and_then(serde_json::Value::as_array) else {
+            return false;
+        };
+        if branches.len() != 2 {
+            return false;
+        }
+        let null_branch = |branch: &serde_json::Value| {
+            branch.as_object().is_some_and(|object| {
+                object.get("type").and_then(serde_json::Value::as_str) == Some("null")
+                    && object.keys().all(|key| {
+                        matches!(
+                            key.as_str(),
+                            "type"
+                                | "title"
+                                | "description"
+                                | "deprecated"
+                                | "example"
+                                | "examples"
+                                | "default"
+                                | "$comment"
+                        )
+                    })
+            })
+        };
+        let referenced_branch = |branch: &serde_json::Value| {
+            branch.as_object().is_some_and(|object| {
+                object
+                    .get("$ref")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|reference| reference.starts_with("#/components/schemas/"))
+                    && object.keys().all(|key| {
+                        matches!(
+                            key.as_str(),
+                            "$ref"
+                                | "title"
+                                | "description"
+                                | "deprecated"
+                                | "example"
+                                | "examples"
+                                | "default"
+                                | "$comment"
+                        )
+                    })
+            })
+        };
+        (null_branch(&branches[0]) && referenced_branch(&branches[1]))
+            || (null_branch(&branches[1]) && referenced_branch(&branches[0]))
+    }
+
     /// Generate request parameters including path, query, header, and request body.
     fn generate_request_param(&self, op: &OperationInfo) -> TokenStream {
         let mut params = Vec::new();
@@ -3318,6 +3461,11 @@ impl CodeGenerator {
             };
             if required {
                 params.push(quote! { #body_ident: #body_type });
+            } else if Self::optional_nullable_json_root_body(op) {
+                // Preserve the three OpenAPI wire states:
+                // None = absent body, Some(None) = JSON null,
+                // Some(Some(value)) = JSON value.
+                params.push(quote! { #body_ident: Option<Option<#body_type>> });
             } else {
                 params.push(quote! { #body_ident: Option<#body_type> });
             }
