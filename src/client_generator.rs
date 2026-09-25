@@ -1280,9 +1280,7 @@ impl CodeGenerator {
         }
     }
 
-    fn nullable_json_request_body(
-        request_body: &crate::analysis::RequestBodyContent,
-    ) -> bool {
+    fn nullable_json_request_body(request_body: &crate::analysis::RequestBodyContent) -> bool {
         let crate::analysis::RequestBodyContent::Json {
             validation_schema, ..
         } = request_body
