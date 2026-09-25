@@ -323,7 +323,10 @@ fn optional_nullable_json_root_body_preserves_three_wire_states() {
         compact.contains("request:Option<Option<StateChangeRequest>>"),
         "{generated}"
     );
-    assert!(compact.contains("ifletSome(request)=request"), "{generated}");
+    assert!(
+        compact.contains("ifletSome(request)=request"),
+        "{generated}"
+    );
     assert!(
         compact.contains("serde_json::to_vec(&request)"),
         "{generated}"
