@@ -317,17 +317,15 @@ fn optional_nullable_json_root_body_preserves_three_wire_states() {
 
     let analysis = create_test_analysis_with_operations(vec![operation]);
     let generated = generator.generate_operation_methods(&analysis).to_string();
+    let compact = generated.split_whitespace().collect::<String>();
 
     assert!(
-        generated.contains("request : Option < Option < StateChangeRequest > >"),
+        compact.contains("request:Option<Option<StateChangeRequest>>"),
         "{generated}"
     );
+    assert!(compact.contains("ifletSome(request)=request"), "{generated}");
     assert!(
-        generated.contains("if let Some (request) = request"),
-        "{generated}"
-    );
-    assert!(
-        generated.contains("serde_json :: to_vec (& request)"),
+        compact.contains("serde_json::to_vec(&request)"),
         "{generated}"
     );
 }
