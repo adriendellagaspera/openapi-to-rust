@@ -247,16 +247,34 @@ fn optional_nullable_root_builder_exposes_value_null_and_absent_states() {
     });
     let compact = client.split_whitespace().collect::<String>();
 
-    assert!(compact.contains(
-        "pubasyncfnsave_nullable_draft(&self,request:Option<Option<SaveNullableDraftRequest>>"
-    ), "{compact}");
-    assert!(compact.contains("pubfnsave_nullable_draft_builder(&self)"), "{compact}");
-    assert!(compact.contains("pubfnrequest_null(mutself)->Self"), "{compact}");
-    assert!(compact.contains("pubfnrequest_absent(mutself)->Self"), "{compact}");
-    assert!(compact.contains("self.request=Some(Some(request))"), "{compact}");
-    assert!(compact.contains(
-        "get_or_insert_with(||Some(Default::default())).get_or_insert_with(Default::default)"
-    ), "{compact}");
+    assert!(
+        compact.contains(
+            "pubasyncfnsave_nullable_draft(&self,request:Option<Option<SaveNullableDraftRequest>>"
+        ),
+        "{compact}"
+    );
+    assert!(
+        compact.contains("pubfnsave_nullable_draft_builder(&self)"),
+        "{compact}"
+    );
+    assert!(
+        compact.contains("pubfnrequest_null(mutself)->Self"),
+        "{compact}"
+    );
+    assert!(
+        compact.contains("pubfnrequest_absent(mutself)->Self"),
+        "{compact}"
+    );
+    assert!(
+        compact.contains("self.request=Some(Some(request))"),
+        "{compact}"
+    );
+    assert!(
+        compact.contains(
+            "get_or_insert_with(||Some(Default::default())).get_or_insert_with(Default::default)"
+        ),
+        "{compact}"
+    );
 }
 
 #[test]
