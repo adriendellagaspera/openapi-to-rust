@@ -131,7 +131,7 @@ launchdarkly/client.rs                                  2539940    64599 e1d9aab
 launchdarkly/mod.rs                                         450       17 d4ed5579304ccd39
 launchdarkly/types.rs                                    735370    18302 838f3b138aec3388
 letta/REQUIRED_DEPS.toml                                    746       17 7f467fcbfe949464
-letta/client.rs                                         1466389    39354 e78ba0411a7ac6c0
+letta/client.rs                                         1466429    39354 c4ea58d9c8fecd25
 letta/mod.rs                                                436       17 5cc3226a7c317d2a
 letta/types.rs                                          6858116   139318 befaf11f957847d6
 lithic/REQUIRED_DEPS.toml                                   688       17 9c8fe0ad1f161983
@@ -235,4 +235,4 @@ writer/client.rs                                         158348     4231 72f63bc
 writer/mod.rs                                               438       17 0435bf1552e493d1
 writer/types.rs                                          182555     4509 7acfc87019af3881
 #
-# specs: 56   files: 224   bytes: 317547191
+# specs: 56   files: 224   bytes: 317547231
