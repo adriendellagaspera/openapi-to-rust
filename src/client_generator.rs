@@ -1280,6 +1280,89 @@ impl CodeGenerator {
         }
     }
 
+    fn nullable_json_request_body(
+        request_body: &crate::analysis::RequestBodyContent,
+    ) -> bool {
+        let crate::analysis::RequestBodyContent::Json {
+            validation_schema, ..
+        } = request_body
+        else {
+            return false;
+        };
+        let Some(object) = validation_schema.as_object() else {
+            return false;
+        };
+        if object.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "anyOf"
+                    | "title"
+                    | "description"
+                    | "deprecated"
+                    | "example"
+                    | "examples"
+                    | "default"
+                    | "$comment"
+            )
+        }) {
+            return false;
+        }
+        let Some(branches) = object.get("anyOf").and_then(serde_json::Value::as_array) else {
+            return false;
+        };
+        if branches.len() != 2 {
+            return false;
+        }
+        let mut nulls = 0;
+        let mut references = 0;
+        for branch in branches {
+            let Some(branch) = branch.as_object() else {
+                return false;
+            };
+            if branch.get("type").and_then(serde_json::Value::as_str) == Some("null") {
+                if branch.keys().any(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "type"
+                            | "title"
+                            | "description"
+                            | "deprecated"
+                            | "example"
+                            | "examples"
+                            | "default"
+                            | "$comment"
+                    )
+                }) {
+                    return false;
+                }
+                nulls += 1;
+                continue;
+            }
+            let Some(reference) = branch.get("$ref").and_then(serde_json::Value::as_str) else {
+                return false;
+            };
+            if !reference.starts_with("#/components/schemas/")
+                || branch.keys().any(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "$ref"
+                            | "title"
+                            | "description"
+                            | "deprecated"
+                            | "example"
+                            | "examples"
+                            | "default"
+                            | "$comment"
+                    )
+                })
+            {
+                return false;
+            }
+            references += 1;
+        }
+        nulls == 1 && references == 1
+    }
+
     fn generate_operation_builders(
         &self,
         analysis: &SchemaAnalysis,
@@ -1336,6 +1419,16 @@ impl CodeGenerator {
         let mut entries = Vec::new();
         for plan in plans {
             let operation = plan.operation;
+            if operation
+                .request_body
+                .as_ref()
+                .is_some_and(Self::nullable_json_request_body)
+            {
+                // The flat method preserves absent/null/value exactly. Until
+                // the convenience builder exposes the same tri-state, omit it
+                // rather than silently collapsing explicit JSON null.
+                continue;
+            }
             let Some(base_shape) = plan.call_shapes.first() else {
                 continue;
             };
@@ -3305,6 +3398,14 @@ impl CodeGenerator {
                 RequestBodyContent::SchemaLess { .. } => unreachable!(
                     "schema-less request bodies preserve the historical client signature"
                 ),
+            };
+            let body_type = if Self::nullable_json_request_body(rb) {
+                // Root nullability is part of the JSON value itself. Apply
+                // that Option before requestBody.required adds the outer
+                // absent/present Option below.
+                quote! { Option<#body_type> }
+            } else {
+                body_type
             };
             let body_ident = match rb {
                 RequestBodyContent::OctetStream { .. }
