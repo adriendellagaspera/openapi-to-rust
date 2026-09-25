@@ -68,6 +68,19 @@ fn builder_spec() -> serde_json::Value {
                 },
                 "responses": { "204": { "description": "saved" } }
             }},
+            "/nullable-draft": { "patch": {
+                "operationId": "saveNullableDraft",
+                "requestBody": {
+                    "content": { "application/json": { "schema": {
+                        "anyOf": [
+                            { "$ref": "#/components/schemas/PatchProfileRequest" },
+                            { "type": "null" }
+                        ],
+                        "title": "Nullable draft"
+                    } } }
+                },
+                "responses": { "204": { "description": "saved" } }
+            }},
             "/collision/{client}": { "get": {
                 "operationId": "client",
                 "parameters": [
@@ -227,6 +240,26 @@ fn mixed_body_builder_is_additive_and_collision_safe() {
 }
 
 #[test]
+fn optional_nullable_root_builder_exposes_value_null_and_absent_states() {
+    let (_, client) = generate(BuildersSection {
+        enabled: true,
+        threshold: 0,
+    });
+    let compact = client.split_whitespace().collect::<String>();
+
+    assert!(compact.contains(
+        "pubasyncfnsave_nullable_draft(&self,request:Option<Option<SaveNullableDraftRequest>>"
+    ), "{compact}");
+    assert!(compact.contains("pubfnsave_nullable_draft_builder(&self)"), "{compact}");
+    assert!(compact.contains("pubfnrequest_null(mutself)->Self"), "{compact}");
+    assert!(compact.contains("pubfnrequest_absent(mutself)->Self"), "{compact}");
+    assert!(compact.contains("self.request=Some(Some(request))"), "{compact}");
+    assert!(compact.contains(
+        "get_or_insert_with(||Some(Default::default())).get_or_insert_with(Default::default)"
+    ), "{compact}");
+}
+
+#[test]
 fn generated_flat_and_builder_calls_compile_together() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let temp = tempfile::TempDir::new().unwrap();
@@ -241,7 +274,7 @@ fn generated_flat_and_builder_calls_compile_together() {
         tracing_enabled: false,
         builders: BuildersSection {
             enabled: true,
-            threshold: 3,
+            threshold: 0,
         },
         ..Default::default()
     });
@@ -294,6 +327,20 @@ pub async fn both_calls_compile(client: &generated::HttpClient) {
     let _ = client
         .save_draft_builder()
         .bio("Optional body initialized on demand".to_string())
+        .send()
+        .await;
+
+    let _ = client.save_nullable_draft(None).await;
+    let _ = client.save_nullable_draft(Some(None)).await;
+    let _ = client
+        .save_nullable_draft_builder()
+        .request_null()
+        .send()
+        .await;
+    let _ = client
+        .save_nullable_draft_builder()
+        .bio("tri-state body".to_string())
+        .request_absent()
         .send()
         .await;
 
